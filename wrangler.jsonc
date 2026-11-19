@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // MSRP runs as its own Worker. It is completely separate from SolanaView's
+  // "solana-scanner" Worker: different name, no shared storage, no payment code.
+  "name": "msrp",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "directory": "public", "binding": "ASSETS" },
+  "vars": {
+    "MSRP_PUBLIC_URL": "https://msrp.workers.dev",
+    "SOLANAVIEW_URL": "https://solanaview.dev"
+  },
+  // Optional storage. Without a database MSRP still works (it falls back to the
+  // free Cloudflare cache). See docs/MY_ACTIONS.md to create and attach it.
+  // "d1_databases": [{ "binding": "DB", "database_name": "msrp", "database_id": "<fill in>" }],
+  "observability": { "enabled": true }
+  // No cron triggers: MSRP only works when someone opens a page, so it can't
+  // use up Cloudflare allowances shared with SolanaView while nobody is visiting.
+}

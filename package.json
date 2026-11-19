@@ -1,0 +1,32 @@
+{
+  "name": "msrp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MSRP: the window sticker for every Solana meme coin. Read-only on-chain forensics on Cloudflare Workers.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "check": "npm run typecheck && npm run lint && npm test && npm run deploy:dry",
+    "deploy:dry": "wrangler deploy --dry-run --outdir .wrangler/dry",
+    "deploy": "wrangler deploy",
+    "smoke:live": "tsx scripts/live-smoke.ts"
+  },
+  "dependencies": {
+    "@noble/curves": "2.0.1",
+    "@noble/hashes": "2.0.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20251014.0",
+    "@eslint/js": "9.37.0",
+    "@types/node": "24.7.2",
+    "eslint": "9.37.0",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.1",
+    "wrangler": "4.42.2"
+  },
+  "engines": { "node": ">=22" }
+}
