@@ -330,3 +330,39 @@ export interface Env {
   MSRP_PUBLIC_URL?: string;
   SOLANAVIEW_URL?: string;
 }
+
+// ---------------------------------------------------------------------------
+// 4. Rendering inputs (src/ui)
+// ---------------------------------------------------------------------------
+
+/** Passed to every page renderer. */
+export interface PageContext {
+  /** Absolute base URL of this site, no trailing slash. */
+  publicUrl: string;
+  /** Absolute base URL of SolanaView, no trailing slash. */
+  solanaviewUrl: string;
+}
+
+/** One rule of the methodology. Exported by src/engines/methodology.ts so the page text always matches the code. */
+export interface MethodologyRule {
+  id: string;
+  engine: "build" | "crowd" | "market" | "overall";
+  title: string;
+  /** What exactly is measured / the exact threshold, plain language. */
+  rule: string;
+  /** Why it matters to a buyer. */
+  why: string;
+  /** What it cannot tell you. */
+  limits: string;
+}
+
+/** Row for "recently checked" lists and the sitemap. */
+export interface RecentSticker {
+  mint: string;
+  name: string | null;
+  symbol: string | null;
+  imageUrl: string | null;
+  overallStars: Stars;
+  independentPct: number | null;
+  computedAt: number;
+}
