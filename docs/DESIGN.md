@@ -2,7 +2,7 @@
 
 The owner rejected the dark "showroom" look as too AI-looking ("wayyy less AI") and also wants the interface to be "a work of genius". Both hold at once: **the genius is in the craft and the details, not in visual effects.** It should look like a real printed label made by a careful person, and reward anyone who looks closely.
 
-Approved reference: `docs/design/reference.html` (open it in a browser). Match its look.
+Approved reference: `docs/design/reference.html`, and the fuller vision in `docs/design/vision-home.html` + `docs/design/vision-sticker.html` (with `vision.css`): homepage, family tree, holder table, highlighter shown on. Open them in a browser and match their look.
 
 ## Look: a printed form
 - White page, black ink. Arial/Helvetica (system fonts only, **no web fonts**). Addresses and numbers you'd copy use a monospace (`ui-monospace, "Courier New", monospace`).
