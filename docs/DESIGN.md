@@ -1,43 +1,42 @@
-# MSRP design brief: "the vault" (owner decision, 19 Nov 2026, final)
+# MSRP design brief: ultra minimal (owner decision, 19 Nov 2026, final)
 
-History: the owner rejected (1) a dark neon "showroom" look as too AI-looking, then (2) a plain printed-label look ("I hate it"). The approved direction is **nerdy-cool, like a personal knowledge vault**: a calm, dark, note-taking-app aesthetic where every coin and wallet is a note, wallet links are `[[wikilinks]]`, the wallet family is a graph view, findings are callouts and "who links here" is backlinks. It's beautiful through restraint and craft, not effects.
+History: the owner rejected a dark neon "showroom" (too AI-looking) and a plain white printed label ("I hate it"). They liked a nerdy dark "knowledge vault" look, then asked for it to be **"ultra minimalist and modern"** and handed the project over. This is the final direction: the vault's soul (dark, calm, purple accent, monospace details, family tree, wallet graph), stripped to one quiet column.
 
-**Approved reference: `docs/design/vault.html`** (open it in a browser; screenshots in `docs/design/vault-*.png`). Match it closely. It's our own original design. Don't copy any real app's logo, name or icons.
+**Approved reference: `docs/design/min/`.** Open `sticker.html` and `home.html` in a browser; the screenshots are `*-desktop.png` and `*-mobile.png`. Match it closely. It's our own original design.
 
-## Layout (desktop ≥ 1100px): a three-pane app
-- **Title bar** (38px): vault name `msrp · solana vault` with a small purple square mark, then tabs (the open note, plus recently opened coins/wallets).
-- **Left sidebar** (248px): a search box (`Search or paste address`, `/` shortcut, pasting a valid address opens it). Below it a file tree: `coins` (recently checked), `wallets · this family` (funder, then creator and linked wallets indented, with coloured dots: yellow funder, purple creator, red linked, grey others), and `reference` (Methodology, API, About).
-- **Center note** (max 740px): breadcrumb, H1 name + muted `$SYMBOL`, `#tags` as pills, a **Properties** block (key/value grid: mint, created, creator, funded by, authorities, overall stars), three stat cards (Market cap · **Sticker price** in purple with a purple border · Independent %), then `## Ratings` (table), `## Who made it` (a sentence with wikilinks, then the family tree as a code block), `## Who holds it` (thin rounded bar + legend + table with label pills), `## Findings` (callouts), and muted fine print.
-- **Right sidebar** (300px): **Local graph** (SVG: funder yellow, coin purple and largest, creator white, linked red, independents green, others grey; thin grey edges for funding and purple edges for "holds this coin"), **Backlinks** (wallets/coins linking here, with a one-line reason) and **Outline**.
-- **Status bar** (26px, monospace): `● chain read · 31 rpc calls · 4.2 s · checked 01:40 UTC · sticker v1`. These are real values from `coverage`.
-- **Mobile (< 1100px):** a single column. Hide the left sidebar and extra tabs, put the search in the title bar, move the graph, backlinks and outline below the note, and stack the stat cards. The page never scrolls sideways (code blocks may scroll inside themselves).
+## Principles
+- **One column**, max 680px, centered, generous whitespace. No sidebars, tabs, cards, boxes, pills, chips, badges, shadows, gradients or icons.
+- **Hairlines only** (`#1d1d21`) to separate things. Hierarchy comes from size, weight and grey levels, never from containers.
+- **One big number** per coin: the sticker price in purple, then `/ market cap` in dim grey, at 64px (48px on phones), followed by one plain sentence explaining it.
+- **Ratings are dots**: five 7px circles, filled purple for the score and `#26262b` for the rest, in a four-column row (two columns on phones) labelled Who made it / Who holds it / Market / Overall. Show "not rated" text when the score is null.
+- **Section labels** are tiny (12px), grey (`#55555d`) and sentence case: "Who made it", "Who holds it", "Notes".
+- **Wallets** are monospace in purple. The funder is yellow. Linked is red, independent is green, and pools/infrastructure are grey.
+- **Notes** are plain sentences with a 6px colored dot (red = warning, yellow = caution, green = fine, grey = not checked), separated by hairlines.
+- **Nerdy details that stay:**
+  - the family tree as aligned monospace text, with no box
+  - a small hairline wallet graph (about 200px) beside the "Who made it" sentence on desktop and below it on phones, with funder yellow, coin purple, creator white, linked red, others dark grey, `<title>` tooltips, and nodes linking to Solscan
+  - a one-line monospace footer from real coverage data: `31 rpc calls · 4.2s · checked 01:40 UTC` on the left, `public data · not financial advice` on the right
+  - `/` to search
+- **Homepage**: a big two-line headline "Who made it. / Who holds it." (the second line dim), one sentence, an underline-only monospace address field with a `/` hint, then "Recently checked" rows (name, $SYMBOL in dim monospace, rating dots, independent %, age).
 
 ## Tokens (use exactly)
 ```
---bg #1b1b1d  --bg2 #141416  --bg3 #232326  --line #2c2c30  --line2 #36363b
---tx #d9d9de  --tx2 #a1a1aa  --tx3 #6b6b74
---acc #a78bfa (purple: links, stars, sticker price)  --accbg rgba(167,139,250,.12)
---red #f2555a  --org #e9973f  --grn #4cc38a  --yel #e5c07b (funder / highlighter)
-fonts: Inter (UI), JetBrains Mono (addresses, numbers, code, status bar), Google Fonts with display=swap and system fallbacks
-radius: 10px cards, 8px callouts, 999px pills, 7px tabs/inputs
+--bg #0c0c0e  --tx #ececef  --tx2 #8d8d96  --tx3 #55555d  --hair #1d1d21
+--acc #a78bfa  --red #f2555a  --grn #4cc38a  --yel #e5c07b  dot-off #26262b  pool-grey #2c2c32
+fonts: Inter 400/500 (UI) + JetBrains Mono 400/500 (addresses, numbers, tree, footer), Google Fonts with display=swap and system fallbacks
+weights: 400 and 500 only. Headings 500 with tight tracking (-0.03em to -0.045em).
 ```
 
-## Components
-- **Wikilinks**: `[[7xKp…Qe2D]]`, with purple text and muted brackets added by CSS. Every wallet and coin is one.
-- **Callouts**: a 3px left border plus a tinted background: danger (red), warning (orange), success (green), question/"Not checked" (grey). A bold title line, then one sentence.
-- **Label pills** in holder tables: linked / launch block (red tint), pool / curve (grey), independent (green tint), unknown (grey outline).
-- **Stars**: purple ★ and dim ★, never bold, `Not rated` when null.
-- **Family tree**: a code block, funder in yellow, wallets in purple, "sold <30m" counts in red, `#` comments muted. Columns aligned.
-
-## The genius details (must work)
-1. **Highlighter**: hover or focus any wallet and every occurrence of it, and every wallet linked to it, gets a soft yellow highlight (`rgba(229,192,123,.16)` + a 1px ring) across the note, the sidebars and the graph nodes. Keyboard accessible.
-2. **Every number is a receipt**: dotted underline, linking to the transaction or account on Solscan.
-3. **Graph is live SVG** computed server-side (deterministic layout), with `<title>` tooltips. Clicking a node opens that wallet on Solscan.
-4. **`/` focuses search; pasting a valid address opens it.**
-5. **Waiting page** in the same app chrome: the note body shows steps ticking off in monospace (`reading coin … ok`, `tracing creator … ok`, `tracing holders 9/14 …`), then the page refreshes into the sticker.
-6. **Works without JavaScript** (JS only adds the highlighter, copy, paste-to-open and polling). CSS ≤ 14 KB, JS ≤ 8 KB.
-7. **Badge** (`/badge/<mint>.svg`): a small dark pill in the same palette: purple mark, `msrp`, ★ rating, `39% independent`.
-8. **Homepage** = the vault opened on a "Start here" note: what MSRP is in two lines, a big search, recently checked coins as a table, and the three sections (Who made it / Who holds it / Sticker price) as short paragraphs with wikilinks to Methodology.
+## Behaviour (must work)
+1. **Highlighter**: hover or focus a wallet and every occurrence of it, and every wallet linked to it, gets a soft yellow ring (`rgba(229,192,123,.13)` background + 1px `rgba(229,192,123,.3)` ring), including the graph nodes. Keyboard accessible.
+2. **Every number links to its evidence** (Solscan transaction or account) with a subtle dotted underline on hover.
+3. **Pasting a valid address opens it.** `/` focuses the field.
+4. **Waiting page**: same column. The steps tick off in monospace (`reading coin … ok`), then the page refreshes into the sticker.
+5. **Works without JavaScript.** JS only adds the highlighter, copy, paste-to-open and polling. CSS ≤ 10 KB, JS ≤ 8 KB.
+6. **Holder table**: a 3px rounded split bar (linked / pools / independent, plus "untraced" in dark grey when present), the three big percentages under it, then hairline rows: rank, wallet, %, label in its color.
+7. **Badge** (`/badge/<mint>.svg`): a tiny dark pill with a purple dot, `msrp`, the five rating dots, then `39% independent`.
+8. **Share card (OG)**: the big purple sticker price on near-black with the coin name, nothing else.
+9. **Methodology, pricing, about and error pages** use the same column: a big title, then plain sections.
 
 ## Banned
-Neon glows, gradient blobs, glassmorphism, emoji, stock icon sets, marketing words ("AI-powered", "revolutionary", "unleash", "next-gen"), and anything that predicts price or says safe/scam/rug/buy/sell.
+Sidebars, tabs, cards, boxed callouts, pills, emoji, icon sets, glows, gradients, glassmorphism, more than two font weights, marketing words ("AI-powered", "revolutionary", "unleash", "next-gen"), and anything that predicts price or says safe/scam/rug/buy/sell.

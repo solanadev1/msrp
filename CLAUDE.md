@@ -4,8 +4,8 @@ MSRP prints a "window sticker" for any Solana meme coin. It shows who built the 
 
 The owner is not a developer. Write in plain language. Work autonomously. When unsure, choose the safest option, write it under DECISIONS in docs/PROGRESS.md and keep going. If you run out of obvious work, add ideas to NEXT_STEPS.md and push.
 
-## DESIGN: owner decision, binding (final: "the vault")
-The interface must follow **docs/DESIGN.md** and match **docs/design/vault.html**: a dark, calm, nerdy "knowledge vault" app (three panes, wikilinks, properties, callouts, local graph, backlinks, status bar). This **overrides any other design brief or task prompt**, including earlier instructions for a "showroom", a printer animation, a constellation, or a plain white printed label (all rejected by the owner). If a task asks for those, build the docs/DESIGN.md version instead.
+## DESIGN: owner decision, binding (final: "ultra minimal")
+The interface must follow **docs/DESIGN.md** and match **docs/design/min/** (sticker.html, home.html and their screenshots): one dark, quiet column, one big purple number, rating dots, hairlines, monospace wallets, the family tree and a small wallet graph. This **overrides any other design brief or task prompt**, including earlier instructions for a "showroom", a printer animation, a constellation, a plain white printed label or a three-pane "vault" (all superseded by the owner). If a task asks for those, build the docs/DESIGN.md version instead.
 
 ## Never
 - Hold, ask for or store a private key or seed phrase. Never build, sign or send a blockchain transaction. MSRP is read-only.
