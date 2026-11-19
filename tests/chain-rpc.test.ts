@@ -156,3 +156,54 @@ test("error messages never contain the RPC URL or its key", async () => {
     assert.ok(!m.includes("SECRET123") && !m.includes("example.invalid"), m);
   }
 });
+
+test("no retry when the provider says the method is switched off (x-ratelimit-method-limit: 0)", async () => {
+  let calls = 0;
+  const fn = async (_u: string, init?: RequestInit) => {
+    calls++;
+    const body = JSON.parse(String(init?.body)) as { id: number };
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, error: { code: 429, message: "Too many requests for a specific RPC call" } }), {
+      status: 429,
+      headers: { "x-ratelimit-method-limit": "0" },
+    });
+  };
+  const rpc = createRpcClient({ url: URL_WITH_KEY, fetch: fn, maxRequests: 5, timeoutMs: 1000, sleep: noSleep });
+  await assert.rejects(rpc.call("getTokenLargestAccounts", ["x"]), (e: unknown) => e instanceof RpcError && e.code === 429);
+  assert.equal(calls, 1, "a refused method is not retried");
+  assert.equal(rpc.requests, 1);
+});
+
+test("answer size limits: per method for single calls, overall for batches; too-large is never retried", async () => {
+  const big = "x".repeat(5_000);
+  let calls = 0;
+  const { fn } = fakeFetch(() => {
+    calls++;
+    return big;
+  });
+  const rpc = createRpcClient({
+    url: URL_WITH_KEY,
+    fetch: fn,
+    maxRequests: 10,
+    timeoutMs: 1000,
+    sleep: noSleep,
+    maxResponseBytes: 20_000,
+    methodResponseBytes: { getProgramAccounts: 1_000 },
+  });
+  await assert.rejects(rpc.call("getProgramAccounts", []), (e: unknown) => e instanceof RpcTransportError && e.reason === "too-large");
+  assert.equal(calls, 1, "not retried");
+  assert.equal(await rpc.call("getTransaction", []), big, "other methods use the overall limit");
+  // A batch of 2 limited calls may use 2 x 1,000 bytes: still too small for two 5,000-byte answers.
+  const two = await rpc.batch([
+    { method: "getProgramAccounts", params: [] },
+    { method: "getProgramAccounts", params: [] },
+  ]);
+  assert.ok(two.every((r) => r instanceof RpcTransportError && r.reason === "too-large"));
+  // Mixed with an unlimited method, the overall limit applies.
+  const mixed = await rpc.batch([
+    { method: "getProgramAccounts", params: [] },
+    { method: "getTransaction", params: [] },
+  ]);
+  assert.deepEqual(mixed, [big, big]);
+  const huge = await rpc.batch(Array.from({ length: 5 }, () => ({ method: "getTransaction", params: [] })));
+  assert.ok(huge.every((r) => r instanceof RpcTransportError && r.reason === "too-large"), "overall limit");
+});

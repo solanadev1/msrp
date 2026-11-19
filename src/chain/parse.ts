@@ -259,13 +259,14 @@ export interface Funding {
 /**
  * The SOL funding of `wallet` in this transaction: the largest SOL move INTO the wallet from a
  * different account (System transfer, or a plain-transfer balance change). Null if there is none.
+ * Moves below `minLamports` are ignored (e.g. 1-lamport "address poisoning" dust is never funding).
  */
-export function findFunding(raw: unknown, wallet: string): Funding | null {
+export function findFunding(raw: unknown, wallet: string, minLamports = 0): Funding | null {
   const basics = txBasics(raw);
   if (!basics || !basics.ok) return null;
   let best: SolTransfer | null = null;
   for (const t of solMoves(raw)) {
-    if (t.to !== wallet || t.from === wallet) continue;
+    if (t.to !== wallet || t.from === wallet || t.lamports < minLamports) continue;
     if (!best || t.lamports > best.lamports) best = t;
   }
   if (!best) return null;

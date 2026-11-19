@@ -107,7 +107,40 @@ test("graduated coin: curve complete, pool holds tokens, launch-factory pattern 
   assert.equal(launch?.devSold, true);
   assert.ok(launch?.firstDevSellAfterMin !== null && (launch?.firstDevSellAfterMin ?? 99) < 60);
   assert.ok(fac.funderSignaturesSampled > 0);
-  assert.ok(facts.earlyBuys.length > 0, "same-block buyers found");
+  // Funded 2 seconds before launch, sold 0.3 minutes after it.
+  assert.equal((facts.coin.createdAt ?? 0) - (fac.deployerOrigin?.fundedAt ?? 0), 2000);
+  assert.equal(launch?.firstDevSellAfterMin, 0.3);
+  // The coin graduated in its own creation block: two bundle transactions bought for 17 wallets.
+  // The curve's short history reaches that block even though the coin has thousands of trades.
+  assert.equal(facts.earlyBuys.length, 17);
+  assert.ok(facts.earlyBuys.every((e) => e.slotsAfterCreate === 0));
+  assert.equal(new Set(facts.earlyBuys.map((e) => e.signature)).size, 2);
+  assert.ok(!facts.coverage.notes.some((n) => n.includes("checked only among the top holders")), "first block read in full");
+  // The master funded other wallets around the same time; 9 of them are among those bundle buyers,
+  // and every one of the 12 checked sent SOL back to the master.
+  assert.equal(fac.siblings.length, 12);
+  const siblings = new Set(fac.siblings.map((x) => x.wallet));
+  assert.equal(facts.earlyBuys.filter((e) => siblings.has(e.wallet)).length, 9);
+  assert.ok(fac.siblings.every((x) => x.sentBackSol > 0));
+  // The pool holds almost everything: insiders sold out.
+  const pool = facts.holders.filter((h) => h.kind === "pool").reduce((t, h) => t + h.pctSupply, 0);
+  assert.ok(pool > 99, `pool ${pool}%`);
+});
+
+test("curve coin: its first block was read in full and nobody but the deployer bought in it", async () => {
+  const { facts } = await replay("curve-coin");
+  assert.deepEqual(facts.earlyBuys, []);
+  assert.ok(!facts.coverage.notes.some((n) => n.includes("checked only among the top holders")));
+  assert.equal(facts.coin.devBuySol, 4.876049381);
+});
+
+test("fee-sharing coin: same-block bundle buyers found by reading back from a nearby transaction", async () => {
+  const { facts } = await replay("curve-coin-fee-sharing");
+  const wallets = facts.earlyBuys.map((e) => e.wallet);
+  // The bundle transaction in tx-samples.json bought for these two wallets in the creation block.
+  for (const w of ["Am8qinvoJHR6AZ3mEiLYwe1mRPh24qidohQtxBN25EAM", "FFhMpqcphMyWUuCbtfLC41Fczv83b1xLgdp6mtMsgKNa"]) assert.ok(wallets.includes(w), w);
+  assert.equal(facts.earlyBuys.length, 6);
+  assert.equal(facts.earlyBuys.filter((e) => e.slotsAfterCreate === 1).length, 1);
 });
 
 test("fee-sharing coin: deployer comes from the creation, not pump.fun's creator record", async () => {
@@ -124,25 +157,30 @@ test("fee-sharing coin: deployer comes from the creation, not pump.fun's creator
 });
 
 test("the real RPC client over the replayed HTTP layer gives the same facts within budget", async () => {
-  const f = loadFixture("graduated-coin");
-  const http = replayFetch(f);
-  const rpc = createRpcClient({ url: "https://rpc.replay.invalid", fetch: http, maxRequests: LIMITS.MAX_RPC_REQUESTS, timeoutMs: 5000, sleep: async () => {} });
-  const facts = await collectFacts(f.mint, { ...options(f, rpc), fetch: http });
-  assert.deepEqual(http.stats.misses, []);
-  assert.ok(rpc.requests <= LIMITS.MAX_RPC_REQUESTS);
-  const direct = await replay("graduated-coin");
-  assert.deepEqual(facts.coin, direct.facts.coin);
-  assert.deepEqual(facts.factory, direct.facts.factory);
-  assert.deepEqual(facts.holders, direct.facts.holders);
+  for (const name of FIXTURES) {
+    const f = loadFixture(name);
+    const http = replayFetch(f);
+    const rpc = createRpcClient({ url: "https://rpc.replay.invalid", fetch: http, maxRequests: LIMITS.MAX_RPC_REQUESTS, timeoutMs: 5000, sleep: async () => {} });
+    const facts = await collectFacts(f.mint, { ...options(f, rpc), fetch: http });
+    assert.deepEqual(http.stats.misses, [], name);
+    assert.ok(rpc.requests <= LIMITS.MAX_RPC_REQUESTS, name);
+    const direct = await replay(name);
+    assert.deepEqual(facts.coin, direct.facts.coin, name);
+    assert.deepEqual(facts.factory, direct.facts.factory, name);
+    assert.deepEqual(facts.holders, direct.facts.holders, name);
+    assert.deepEqual(facts.earlyBuys, direct.facts.earlyBuys, name);
+  }
 });
 
 for (const budget of [1, 2, 3, 5, 8]) {
   test(`budget of ${budget} request(s): partial facts, never more requests, never a throw`, async () => {
     for (const name of FIXTURES) {
+      const needed = (await replay(name)).rpc.requests;
       const { facts, rpc } = await replay(name, { maxRpcRequests: budget });
       assert.ok(rpc.requests <= budget, `${name}: ${rpc.requests} > ${budget}`);
       assert.equal(facts.coverage.complete, false);
-      assert.ok(facts.coverage.notes.some((n) => n.includes(`${budget} Solana request`)), `${name}: budget note`);
+      if (budget < needed) assert.ok(facts.coverage.notes.some((n) => n.includes(`${budget} Solana request`)), `${name}: budget note`);
+      else assert.ok(!facts.coverage.notes.some((n) => n.includes("Solana request")), `${name}: needs only ${needed}, so no budget note`);
       assert.ok(facts.coin.supply > 0, "the coin itself is always read first");
       assert.deepEqual(rpc.misses, [], `${name}: no unrecorded calls`);
     }

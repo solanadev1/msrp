@@ -88,10 +88,23 @@ export const COLLECT = {
   DEPLOYER_TOKEN_ACCOUNT_SIGNATURES: 50,
   /** Deployer transactions right after the creation we always read (to catch a fast dev sell). */
   DEV_SELL_LOOKAHEAD_TX: 6,
+  /** Signatures read for a graduated coin's bonding curve (its whole trading life on the curve, usually). */
+  CURVE_SIGNATURES: 1000,
+  /**
+   * To reach a busy coin's first block we read its history backwards from a transaction we already
+   * know; that transaction must be at most this many slots (~400 ms each, so ~5 minutes) after the
+   * creation, so the stretch in between usually fits in one page of signatures.
+   */
+  FIRST_BLOCK_ANCHOR_SLOTS: 750,
   /** Max transactions read to confirm same-block / next-block buys. */
   EARLY_BUY_TX_CAP: 40,
   /** SOL below this is a tip or fee, not "funding" a sibling wallet. */
   MIN_SIBLING_FUNDING_SOL: 0.01,
+  /**
+   * A wallet's first SOL must keep it rent-exempt (890,880 lamports for a plain wallet), so a smaller
+   * move (e.g. 1-lamport "address poisoning" dust) is never the funding we are looking for.
+   */
+  MIN_FUNDING_LAMPORTS: 890_880,
   /** Don't start another round of requests with less time than this left. */
   MIN_ROUND_MS: 750,
 } as const;

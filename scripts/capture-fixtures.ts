@@ -4,13 +4,16 @@
  *
  *   npx tsx scripts/capture-fixtures.ts                      # find candidates automatically
  *   npx tsx scripts/capture-fixtures.ts <curveMint> <graduatedMint>
+ *   npx tsx scripts/capture-fixtures.ts - <graduatedMint>    # "-" skips that coin (keeps its fixture)
+ *   npx tsx scripts/capture-fixtures.ts --trim               # only re-trim the existing fixture files
+ *   npx tsx scripts/capture-fixtures.ts --top-up <name>      # add only the calls a fixture is missing
  *
  * It runs the real collectFacts() against the public RPC (slowly and politely) and records every
  * call. The public RPC refuses getTokenLargestAccounts; for the graduated coin the script computes
  * the same answer from getProgramAccounts (all of the coin's token accounts, largest 20) and serves
  * that to collectFacts, noting it in the fixture. The curve coin uses collectFacts' own fallback.
  */
-import { writeFileSync, statSync } from "node:fs";
+import { existsSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { LIMITS, PROGRAMS } from "../src/config";
 import { collectFacts } from "../src/chain/collect";
@@ -19,7 +22,18 @@ import { base64ToBytes, readU64LE } from "../src/chain/bytes";
 import { decodeBondingCurveAccount, bondingCurveAddress } from "../src/chain/pump";
 import type { CollectedFacts, FetchLike } from "../src/types";
 import { politeFetch } from "../tests/helpers/politeFetch";
-import { emptyFixture, FIXTURE_DIR, recordingFetch, type Fixture } from "../tests/helpers/replay";
+import {
+  callKey,
+  emptyFixture,
+  FIXTURE_DIR,
+  fixturePath,
+  loadFixture,
+  recordingFetch,
+  replayFetch,
+  saveFixture,
+  trimFixture,
+  type Fixture,
+} from "../tests/helpers/replay";
 
 const RPC_URL = "https://api.mainnet-beta.solana.com";
 const polite = politeFetch(fetch, { minGapMs: 2500, backoffMs: 8000, maxRetries: 8, log: (l) => console.log(l) });
@@ -126,18 +140,48 @@ async function capture(name: string, mint: string, deriveLargest: boolean): Prom
   return { fixture, facts };
 }
 
-function trimForSize(fixture: Fixture) {
-  // Drop fields the chain reader never reads, keeping the shapes real.
-  for (const entry of Object.values(fixture.rpc)) {
-    if (entry.method !== "getTransaction" || !entry.result || typeof entry.result !== "object") continue;
-    const tx = entry.result as { meta?: Record<string, unknown>; transaction?: { message?: Record<string, unknown> } };
-    if (tx.meta) {
-      delete tx.meta.rewards;
-      delete tx.meta.returnData;
-      delete tx.meta.computeUnitsConsumed;
-      delete tx.meta.costUnits;
+/**
+ * Top up an existing fixture after collectFacts learned to make a few more calls: calls already
+ * recorded are answered from the file, only the missing ones go to the network (and are recorded).
+ * The capture time stays the same and a note lists what was added and when.
+ */
+async function topUp(name: string): Promise<{ fixture: Fixture; facts: CollectedFacts }> {
+  const fixture = loadFixture(name);
+  console.log(`\n=== top-up ${name}: ${fixture.mint}`);
+  const added: string[] = [];
+  const rec = recordingFetch(polite, fixture, RPC_URL);
+  const http: FetchLike = async (url, init) => {
+    if (url !== RPC_URL) {
+      const hit = fixture.http[url];
+      if (hit) return new Response(hit.body, { status: hit.status, headers: { "content-type": "application/json" } });
+      added.push(`GET ${url}`);
+      return rec(url, init);
     }
+    const request = JSON.parse(String(init?.body)) as { method: string; params: unknown[] } | { method: string; params: unknown[] }[];
+    const items = Array.isArray(request) ? request : [request];
+    const missing = items.filter((i) => !fixture.rpc[callKey(i.method, i.params)]);
+    if (missing.length > 0) {
+      for (const m of missing) added.push(callKey(m.method, m.params).slice(0, 160));
+      await (await rec(RPC_URL, { ...init, body: JSON.stringify(missing) })).text();
+    }
+    // Everything asked is in the fixture now (a failed fetch is recorded as an error): answer from it.
+    return replayFetch(fixture, RPC_URL)(url, init);
+  };
+  const client = createRpcClient({ url: RPC_URL, fetch: http, maxRequests: LIMITS.MAX_RPC_REQUESTS, timeoutMs: 120_000 });
+  const facts = await collectFacts(fixture.mint, {
+    rpc: client,
+    fetch: http,
+    now: () => fixture.capturedAt,
+    maxRpcRequests: LIMITS.MAX_RPC_REQUESTS,
+    deadlineMs: LIMITS.DEADLINE_MS,
+  });
+  if (added.length > 0) {
+    fixture.notes.push(
+      `Topped up at ${new Date().toISOString()}: ${added.length} call(s) the chain reader started making after the capture were fetched then (transactions never change; a signature list may include later activity): ${added.join(" | ")}`,
+    );
   }
+  console.log(`added ${added.length} call(s)`);
+  return { fixture, facts };
 }
 
 function summary(facts: CollectedFacts) {
@@ -152,6 +196,12 @@ function summary(facts: CollectedFacts) {
     devBuySol: facts.coin.devBuySol,
     curve: facts.coin.bondingCurve,
     funder: f?.funder ?? null,
+    funderIsVeteran: f?.funderIsVeteran ?? null,
+    funderSignaturesSampled: f?.funderSignaturesSampled ?? null,
+    deployerOrigin: f?.deployerOrigin ?? null,
+    deployerSentBackSol: f?.deployerSentBackSol ?? null,
+    deployerLaunchList: f?.deployerLaunches.map((l) => ({ mint: l.mint, devBuySol: l.devBuySol, devSold: l.devSold, firstDevSellAfterMin: l.firstDevSellAfterMin })) ?? null,
+    siblingList: f?.siblings.map((x) => ({ wallet: x.wallet, fundedSol: x.fundedSol, launches: x.launches.length, sentBackSol: x.sentBackSol })) ?? null,
     siblings: f?.siblings.length ?? null,
     deployerLaunches: f?.deployerLaunches.length ?? null,
     siblingLaunches: f ? f.siblings.reduce((s, x) => s + x.launches.length, 0) : null,
@@ -165,24 +215,55 @@ function summary(facts: CollectedFacts) {
   };
 }
 
+const FIXTURE_FILES = ["curve-coin", "graduated-coin", "curve-coin-fee-sharing"];
+
+const mb = (path: string) => `${(statSync(path).size / 1e6).toFixed(2)} MB`;
+
+/** Write a fixture compressed, and remove an old uncompressed copy. */
+function store(name: string, fixture: Fixture): string {
+  const path = saveFixture(name, fixture);
+  const plain = join(FIXTURE_DIR, `${name}.json`);
+  if (existsSync(plain)) unlinkSync(plain);
+  return path;
+}
+
+/** Re-trim and compress fixture files already on disk (drops fields the chain reader never reads). */
+function retrimAll() {
+  for (const name of FIXTURE_FILES) {
+    if (!existsSync(fixturePath(name))) continue;
+    const fixture = loadFixture(name);
+    trimFixture(fixture);
+    const path = store(name, fixture);
+    console.log(`trimmed ${path} (${mb(path)}, ${(JSON.stringify(fixture).length / 1e6).toFixed(2)} MB uncompressed)`);
+  }
+}
+
 async function main() {
-  const [curveArg, gradArg] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  if (args[0] === "--trim") return retrimAll();
+  if (args[0] === "--top-up") {
+    const name = args[1] ?? "";
+    if (!FIXTURE_FILES.includes(name)) throw new Error(`--top-up needs one of: ${FIXTURE_FILES.join(", ")}`);
+    const { fixture, facts } = await topUp(name);
+    trimFixture(fixture);
+    const path = store(name, fixture);
+    console.log(JSON.stringify(summary(facts), null, 2));
+    console.log(`wrote ${path} (${mb(path)}, ${Object.keys(fixture.rpc).length} calls)`);
+    return;
+  }
+  const [curveArg, gradArg] = args;
   const { curve, graduated } = curveArg && gradArg ? { curve: curveArg, graduated: gradArg } : await findCandidates();
-  const out: Record<string, unknown> = {};
   for (const [name, mint, derive] of [
     ["curve-coin", curve, false],
     ["graduated-coin", graduated, true],
   ] as const) {
+    if (mint === "-") continue;
     const { fixture, facts } = await capture(name, mint, derive);
-    trimForSize(fixture);
-    const path = join(FIXTURE_DIR, `${name}.json`);
-    writeFileSync(path, JSON.stringify(fixture));
-    const s = summary(facts);
-    out[name] = s;
-    console.log(JSON.stringify(s, null, 2));
-    console.log(`wrote ${path} (${(statSync(path).size / 1e6).toFixed(2)} MB, ${Object.keys(fixture.rpc).length} calls)`);
+    trimFixture(fixture);
+    const path = store(name, fixture);
+    console.log(JSON.stringify(summary(facts), null, 2));
+    console.log(`wrote ${path} (${mb(path)}, ${Object.keys(fixture.rpc).length} calls)`);
   }
-  writeFileSync(join(FIXTURE_DIR, "capture-summary.json"), JSON.stringify(out, null, 2));
 }
 
 main().catch((error: unknown) => {

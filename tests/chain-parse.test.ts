@@ -148,3 +148,34 @@ test("launch factory: create + dev buy, then a PumpSwap sell after graduation", 
   assert.equal(sell?.source, "balances");
   assert.ok((sell?.sol ?? 0) > 13);
 });
+
+test("launch factory: the coin graduated in its creation block; the migration is not a trade", () => {
+  const m = tx("luciaMigrateSameBlock");
+  assert.equal(txBasics(m)?.slot, txBasics(tx("luciaCreate"))?.slot, "same block as the create");
+  assert.equal(parsePumpCreate(m), null);
+  assert.deepEqual(mintTrades(m, LUCIA), []);
+  assert.equal(walletTrade(m, LUCIA, LUCIA_DEPLOYER), null);
+});
+
+test("launch factory: creator fees collected and forwarded to the master count as SOL sent back", () => {
+  const fee = tx("creatorFeeForwardedToMaster");
+  assert.equal(isPlainTransferTx(fee), false);
+  assert.equal(solSent(fee, LUCIA_DEPLOYER, LUCIA_FUNDER), 39.096275651);
+  assert.equal(walletTrade(fee, LUCIA, LUCIA_DEPLOYER), null, "collecting fees is not a sell");
+  assert.equal(parsePumpCreate(fee), null);
+});
+
+test("address-poisoning dust (1 lamport to many wallets) is never a wallet's funding", () => {
+  const dust = tx("dustPoisoning");
+  assert.equal(findFunding(dust, LUCIA_DEPLOYER)?.sol, 1e-9, "it is a SOL move");
+  assert.equal(findFunding(dust, LUCIA_DEPLOYER, 890_880), null, "but below the rent-exempt minimum");
+  assert.equal(findFunding(tx("fundingViaTempAccount"), LUCIA_DEPLOYER, 890_880)?.funder, LUCIA_FUNDER);
+});
+
+test("launch factory: the dev sold most of its coins 81 seconds after launch", () => {
+  const created = parsePumpCreate(tx("luciaCreate"));
+  const sold = txBasics(tx("pumpSwapSell"));
+  assert.ok(created?.createdAt && sold?.blockTime);
+  assert.equal((sold.blockTime - created.createdAt) / 1000, 81);
+  assert.deepEqual(mintsSoldBy(tx("pumpSwapSell"), LUCIA_DEPLOYER), [LUCIA]);
+});

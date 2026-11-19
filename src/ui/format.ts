@@ -154,3 +154,22 @@ export function makeShortener(addresses: Iterable<string>): (addr: string) => st
 export function short(addr: string): string {
   return addr.length > 12 ? `${addr.slice(0, 4)}…${addr.slice(-4)}` : addr;
 }
+
+/** "14 Oct 18:00 UTC" (no year: stickers are minutes old). */
+export function dayTime(ms: number | null | undefined): string {
+  if (!isNum(ms)) return UNKNOWN;
+  const d = new Date(ms);
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()] ?? ""} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} UTC`;
+}
+
+/** "6.4s" for elapsed milliseconds. */
+export function seconds(ms: number | null | undefined): string {
+  if (!isNum(ms)) return UNKNOWN;
+  return `${Math.round(ms / 100) / 10}s`;
+}
+
+/** "a, b and c". */
+export function joinAnd(parts: string[]): string {
+  if (parts.length <= 1) return parts.join("");
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}

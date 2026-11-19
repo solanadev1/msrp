@@ -1,7 +1,7 @@
 /* MSRP: progressive enhancement only. Every page works without this file.
-   Adds: "/" to focus the address box, paste-to-check, copy buttons,
-   the highlighter (hover or focus a wallet to mark it and every wallet linked to it),
-   and the waiting page refresh. No libraries, no tracking. */
+   Adds: "/" to focus the address field, paste-to-open, copy buttons, relative ages,
+   the highlighter (hover or focus a wallet to mark it and every wallet linked to it,
+   graph nodes included) and the waiting page refresh. No libraries, no tracking. */
 (function () {
   "use strict";
   var d = document;
@@ -9,7 +9,7 @@
   function all(sel, root) { return Array.prototype.slice.call((root || d).querySelectorAll(sel)); }
   function up(el, sel) { return el && el.closest ? el.closest(sel) : null; }
 
-  /* "/" jumps to the address box. */
+  /* "/" jumps to the address field. */
   var q = d.getElementById("q");
   d.addEventListener("keydown", function (e) {
     if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || !q) return;
@@ -20,7 +20,7 @@
     q.select();
   });
 
-  /* Pasting a valid address checks it right away. */
+  /* Pasting a valid address opens it right away. */
   if (q) {
     q.addEventListener("paste", function () {
       setTimeout(function () {
@@ -42,7 +42,7 @@
     var t = d.createElement("textarea");
     t.value = text;
     t.setAttribute("readonly", "");
-    t.className = "off";
+    t.className = "vh";
     d.body.appendChild(t);
     t.select();
     var ok = false;
@@ -60,6 +60,15 @@
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(function () { copied(btn, true); }, function () { fallback(text, btn); });
     } else fallback(text, btn);
+  });
+
+  /* Relative ages on the home page: "14 Oct 18:00" becomes "2m", "3h" or "5d". */
+  var now = Date.now();
+  all("time[data-ago]").forEach(function (t) {
+    var at = Date.parse(t.getAttribute("datetime") || ""), m = Math.round((now - at) / 60000);
+    if (!(m >= 0)) return;
+    t.title = t.textContent + " UTC";
+    t.textContent = m < 1 ? "now" : m < 60 ? m + "m" : m < 2880 ? Math.round(m / 60) + "h" : Math.round(m / 1440) + "d";
   });
 
   /* Highlighter: data-w = the wallet, data-g = linked groups (same funder, same cluster). */
@@ -91,17 +100,17 @@
   d.addEventListener("focusin", function (e) { var el = up(e.target, "[data-w]"); if (el) light(el); else clear(); });
   d.addEventListener("keydown", function (e) { if (e.key === "Escape") clear(); });
 
-  /* Waiting page: ask the API for the sticker, then open it. */
+  /* Waiting page: ask the API for the sticker, tick the steps off, then open it. */
   var wait = d.getElementById("wait");
   if (wait && window.fetch) {
     var api = wait.getAttribute("data-api"), next = wait.getAttribute("data-next");
     var status = d.getElementById("wait-status"), error = d.getElementById("wait-error");
     var t0 = Date.now(), tries = 0;
     var secs = function () { return Math.round((Date.now() - t0) / 1000); };
-    var timer = setInterval(function () { status.textContent = "Working. " + secs() + " s"; }, 1000);
+    var timer = setInterval(function () { status.textContent = "working · " + secs() + "s"; }, 1000);
     var fail = function (msg) {
       clearInterval(timer);
-      status.textContent = "Stopped after " + secs() + " s.";
+      status.textContent = "stopped after " + secs() + "s";
       error.textContent = msg;
       error.hidden = false;
     };
@@ -109,8 +118,8 @@
       clearInterval(timer);
       var marks = all(".steps .ok", wait), i = 0;
       (function tick() {
-        if (i < marks.length) { marks[i++].textContent = " done"; setTimeout(tick, 70); return; }
-        status.textContent = "Done in " + secs() + " s. Opening the sticker.";
+        if (i < marks.length) { marks[i].textContent = "ok"; marks[i++].className = "ok done"; setTimeout(tick, 70); return; }
+        status.textContent = "done in " + secs() + "s · opening the sticker";
         location.replace(next);
       })();
     };

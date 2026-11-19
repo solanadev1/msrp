@@ -1,5 +1,5 @@
 /**
- * Helpers for self-contained SVG (badge, share card): text width estimates and star shapes.
+ * Helpers for self-contained SVG (badge, share card): text width estimates, rating dots and (legacy) star shapes.
  * No external fonts: widths are estimated from Arial/Helvetica metrics and pinned with
  * `textLength`, so the label never overflows even when a fallback font is used.
  */
@@ -52,4 +52,28 @@ export function starRow(x: number, cy: number, R: number, filled: number, gap: n
 /** Width taken by `starRow` for the same R and gap. */
 export function starRowWidth(R: number, gap: number): number {
   return 5 * 2 * R + 4 * gap;
+}
+
+/** Width of monospace text (JetBrains Mono / Menlo advance is 0.6 em). Counts code points. */
+export function monoWidth(text: string, size: number): number {
+  return Math.ceil(Array.from(text).length * size * 0.6);
+}
+
+/** Shared SVG font stacks: no web fonts in self-contained SVG, so widths are pinned with textLength. */
+export const SVG_SANS = "Inter,-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif";
+export const SVG_MONO = "JetBrains Mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
+
+/** Five rating dots (filled purple for the score, #26262b for the rest) starting at x, centred on cy. */
+export function dotRow(x: number, cy: number, r: number, gap: number, filled: number): string {
+  let out = "";
+  for (let i = 0; i < 5; i++) {
+    const cx = Math.round((x + r + i * (2 * r + gap)) * 100) / 100;
+    out += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${i < filled ? "#a78bfa" : "#26262b"}"/>`;
+  }
+  return out;
+}
+
+/** Width taken by `dotRow` for the same r and gap. */
+export function dotRowWidth(r: number, gap: number): number {
+  return 5 * 2 * r + 4 * gap;
 }

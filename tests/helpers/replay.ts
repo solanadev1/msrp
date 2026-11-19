@@ -6,7 +6,8 @@
  * - Every plain GET (DEX Screener) is stored by URL.
  * - recordingFetch wraps a real fetch; replayFetch / ReplayRpc never touch the network.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LIMITS } from "../../src/config";
@@ -162,11 +163,96 @@ export class ReplayRpc implements RpcClient {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Size trimming: drop fields the chain reader never reads, keep every shape real.
+// ---------------------------------------------------------------------------
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Fields of a jsonParsed getTransaction result that src/chain never reads. */
+function trimInstruction(ix: unknown) {
+  if (!isRecord(ix)) return;
+  delete ix.stackHeight;
+  delete ix.program; // program name; programId is what we read
+  // Unparsed instructions keep data (pump.fun events live there); account lists are never read.
+  if (ix.parsed === undefined) delete ix.accounts;
+}
+
+export function trimTransaction(tx: unknown): void {
+  if (!isRecord(tx)) return;
+  delete tx.version;
+  const meta = tx.meta;
+  if (isRecord(meta)) {
+    for (const k of ["rewards", "returnData", "computeUnitsConsumed", "costUnits", "status", "loadedAddresses"]) delete meta[k];
+    for (const list of [meta.preTokenBalances, meta.postTokenBalances]) {
+      if (!Array.isArray(list)) continue;
+      for (const b of list) {
+        if (!isRecord(b)) continue;
+        delete b.programId;
+        if (isRecord(b.uiTokenAmount)) {
+          delete b.uiTokenAmount.uiAmount;
+          delete b.uiTokenAmount.uiAmountString;
+        }
+      }
+    }
+    if (Array.isArray(meta.innerInstructions)) {
+      for (const group of meta.innerInstructions) if (isRecord(group) && Array.isArray(group.instructions)) group.instructions.forEach(trimInstruction);
+    }
+    // Compute-unit log lines are never read (invoke / success / Instruction / Program data lines are).
+    if (Array.isArray(meta.logMessages)) meta.logMessages = meta.logMessages.filter((l) => typeof l !== "string" || !/^Program \w+ consumed \d+ of \d+ compute units$/.test(l));
+  }
+  const message = isRecord(tx.transaction) && isRecord(tx.transaction.message) ? tx.transaction.message : null;
+  if (message) {
+    delete message.recentBlockhash;
+    delete message.addressTableLookups;
+    if (Array.isArray(message.accountKeys)) {
+      for (const k of message.accountKeys) {
+        if (!isRecord(k)) continue;
+        delete k.source;
+        delete k.writable;
+      }
+    }
+    if (Array.isArray(message.instructions)) message.instructions.forEach(trimInstruction);
+  }
+}
+
+/** Trim every recorded answer in a fixture (transactions and signature lists). Safe to run twice. */
+export function trimFixture(fixture: Fixture): void {
+  for (const entry of Object.values(fixture.rpc)) {
+    if (entry.method === "getTransaction") trimTransaction(entry.result);
+    else if (entry.method === "getSignaturesForAddress" && Array.isArray(entry.result)) {
+      for (const s of entry.result) {
+        if (!isRecord(s)) continue;
+        delete s.memo;
+        delete s.confirmationStatus;
+      }
+    }
+  }
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 export const FIXTURE_DIR = join(here, "..", "fixtures");
 
+/**
+ * Replay fixtures are stored gzip-compressed (`<name>.json.gz`, about a quarter of the size: most of
+ * a recording is signature lists, which compress well). A plain `<name>.json` is read too.
+ */
+export function fixturePath(name: string): string {
+  const gz = join(FIXTURE_DIR, `${name}.json.gz`);
+  return existsSync(gz) ? gz : join(FIXTURE_DIR, `${name}.json`);
+}
+
 export function loadFixture(name: string): Fixture {
-  return JSON.parse(readFileSync(join(FIXTURE_DIR, `${name}.json`), "utf8")) as Fixture;
+  const path = fixturePath(name);
+  const raw = readFileSync(path);
+  return JSON.parse((path.endsWith(".gz") ? gunzipSync(raw) : raw).toString("utf8")) as Fixture;
+}
+
+/** Write a replay fixture as `<name>.json.gz` (deterministic bytes: no file name or time in the header). Returns the path. */
+export function saveFixture(name: string, fixture: Fixture): string {
+  const path = join(FIXTURE_DIR, `${name}.json.gz`);
+  writeFileSync(path, gzipSync(JSON.stringify(fixture), { level: 9 }));
+  return path;
 }
 
 /** A fake clock: returns the fixture's capture time (so "now" matches what was recorded). */

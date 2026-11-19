@@ -42,6 +42,23 @@ export const LIMITS = {
   LAUNCH_SIGNATURE_SAMPLE: 60,
   /** Max transactions fetched per wallet when looking for launches and sells. */
   LAUNCH_TX_SAMPLE: 25,
+  /**
+   * Holder-list fallback (only when the provider refuses getTokenLargestAccounts, like the public RPC):
+   * we read every token account of the coin, owner + amount only. A Worker has 128 MB of memory and
+   * little CPU, so we stop if the coin has more token accounts than this and say holders are unknown.
+   * pump.fun curve coins usually have a few hundred; 3,000 covers almost every young coin.
+   */
+  HOLDER_SCAN_MAX_ACCOUNTS: 3_000,
+  /**
+   * Largest answer (bytes) we accept for that fallback. Each account is about 290 bytes of JSON,
+   * so 1 MB is a little over HOLDER_SCAN_MAX_ACCOUNTS. Bigger answers are cut off while downloading.
+   */
+  HOLDER_SCAN_MAX_BYTES: 1_000_000,
+  /**
+   * Largest answer (bytes) we accept for any one Solana request. A full batch of 40 signature lists
+   * is about 7 MB; this only stops a runaway answer from exhausting the Worker's 128 MB of memory.
+   */
+  MAX_RESPONSE_BYTES: 16_000_000,
 } as const;
 
 export const THRESHOLDS = {

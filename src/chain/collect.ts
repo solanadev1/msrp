@@ -53,7 +53,7 @@ import {
   mintTrades,
 } from "./parse";
 import { bondingCurveAddress, curveProgressPct, decodeBondingCurveAccount, type PumpCurve } from "./pump";
-import { BudgetExceededError, RpcError } from "./rpc";
+import { BudgetExceededError, RpcError, RpcTransportError } from "./rpc";
 
 // ---------------------------------------------------------------------------
 // Errors (the only things collectFacts throws)
@@ -425,6 +425,20 @@ export async function collectFacts(mint: string, opts: AnalyzeOptions): Promise<
   }
   const curveCreatorWallet = curve?.creator && !isOffCurveAddress(curve.creator) ? curve.creator : null;
 
+  // A graduated coin's curve stops trading at graduation, so the curve's own history is usually short
+  // and reaches back to the creation block, where bundles buy. Read it when the coin's history is too
+  // long to reach its first block (asked as soon as we know, so it joins the next batch).
+  const curveSigsP: Promise<SigInfo[] | null> = curve?.complete
+    ? mintPage1P.then((page1) =>
+        page1.ok && page1.value.length >= COLLECT.MINT_SIGNATURE_PAGE
+          ? getSigs(curvePda, COLLECT.CURVE_SIGNATURES, P.EARLY).catch((error: unknown) => {
+              explain(error, "the trades in the coin's first block");
+              return null;
+            })
+          : null,
+      )
+    : Promise.resolve(null);
+
   // Shared state filled by the steps below.
   const mintSigs: SigInfo[] = [];
   let mintHistoryComplete = false;
@@ -540,7 +554,7 @@ export async function collectFacts(mint: string, opts: AnalyzeOptions): Promise<
           // The first SOL usually arrives in the very first transaction; look at the second if not.
           const okOldest = sigs.filter((s) => s.ok).slice(-2).reverse();
           for (const s of okOldest) {
-            const f = findFunding(await getTx(s.signature, P.ORIGIN), wallet);
+            const f = findFunding(await getTx(s.signature, P.ORIGIN), wallet, COLLECT.MIN_FUNDING_LAMPORTS);
             if (f) {
               origin.funder = f.funder;
               origin.fundedSol = round9(f.sol);
@@ -562,6 +576,44 @@ export async function collectFacts(mint: string, opts: AnalyzeOptions): Promise<
   };
 
   // ---- Step: holders ----
+  /**
+   * Every token account of the coin via getProgramAccounts, reading only owner + amount (dataSlice
+   * offset 32, 40 bytes) so each account is ~290 bytes of JSON. A popular coin can have hundreds of
+   * thousands of accounts, so the RPC client cuts the answer off past LIMITS.HOLDER_SCAN_MAX_BYTES and we
+   * refuse lists longer than LIMITS.HOLDER_SCAN_MAX_ACCOUNTS. Either way: a note, no holders, no failure.
+   */
+  const scanHolders = async (): Promise<HolderRow[] | null> => {
+    const filters: unknown[] =
+      tokenProgram === PROGRAMS.TOKEN
+        ? [{ dataSize: SPL_TOKEN_ACCOUNT_SIZE }, { memcmp: { offset: 0, bytes: mint } }]
+        : // Token-2022 accounts have different sizes (extensions), so only the mint filter applies.
+          [{ memcmp: { offset: 0, bytes: mint } }];
+    const all = await settle(
+      loader.load<unknown>("getProgramAccounts", [tokenProgram, { encoding: "base64", dataSlice: { offset: 32, length: 40 }, filters, commitment: "confirmed" }], {
+        priority: P.HOLDERS,
+        // On its own request: a refusal or a cut-off answer can't spoil other calls.
+        isolate: opts.maxRpcRequests >= 2,
+      }),
+    );
+    const tooMany = `This coin has more than ${fmt(LIMITS.HOLDER_SCAN_MAX_ACCOUNTS)} token accounts, too many to read one by one, and the Solana provider refused the largest-holders lookup, so who holds it is unknown.`;
+    if (!all.ok) {
+      if (all.error instanceof RpcTransportError && all.error.reason === "too-large") note(tooMany);
+      else if (all.error instanceof BudgetExceededError || all.error instanceof DeadlineError) explain(all.error, "the largest holders");
+      else note("The Solana provider refused both ways of listing the largest holders, so who holds this coin is unknown.");
+      return null;
+    }
+    if (!Array.isArray(all.value)) {
+      note("The Solana provider sent an unreadable list of token accounts, so who holds this coin is unknown.");
+      return null;
+    }
+    if (all.value.length > LIMITS.HOLDER_SCAN_MAX_ACCOUNTS) {
+      note(tooMany);
+      return null;
+    }
+    note(`The Solana provider refused the largest-holders lookup, so holders were read from all ${fmt(all.value.length)} token accounts instead.`);
+    return holderRowsFromProgramAccounts(all.value, decimals, LIMITS.TOP_HOLDERS);
+  };
+
   const holderSigs = new Map<string, SigInfo[]>();
   const holdersP: Promise<HolderFact[] | null> = (async () => {
     let rows: HolderRow[] = [];
@@ -586,21 +638,16 @@ export async function collectFacts(mint: string, opts: AnalyzeOptions): Promise<
           });
           if (rows.length < top.length) note("Some of the largest token accounts could not be read, so they are left out of the holder list.");
         }
-      } else if (curve && !curve.complete) {
-        // Fallback for providers that refuse getTokenLargestAccounts: a coin still on the pump.fun
-        // curve has few holders, so read all of its token accounts (owner + amount only).
-        const filters: unknown[] = [{ memcmp: { offset: 0, bytes: mint } }];
-        if (tokenProgram === PROGRAMS.TOKEN) filters.push({ dataSize: 165 });
-        const all = await loader.load<unknown>(
-          "getProgramAccounts",
-          [tokenProgram, { encoding: "base64", dataSlice: { offset: 32, length: 40 }, filters, commitment: "confirmed" }],
-          { priority: P.HOLDERS },
-        );
-        rows = holderRowsFromProgramAccounts(all, decimals).slice(0, LIMITS.TOP_HOLDERS);
-        note("Your Solana provider refused the largest-holders lookup, so holders were read from all token accounts instead.");
       } else {
-        note("The Solana provider refused the largest-holders lookup, so who holds this coin is unknown.");
-        return null;
+        if (!largest.ok && (largest.error instanceof BudgetExceededError || largest.error instanceof DeadlineError)) {
+          explain(largest.error, "the largest holders");
+          return null;
+        }
+        // Fallback for providers that refuse getTokenLargestAccounts (the public RPC does): read every
+        // token account of the coin, owner + amount only, within hard size limits (see scanHolders).
+        const scanned = await scanHolders();
+        if (!scanned) return null;
+        rows = scanned;
       }
     } catch (error) {
       explain(error, "the largest holders");
@@ -686,7 +733,14 @@ export async function collectFacts(mint: string, opts: AnalyzeOptions): Promise<
           candidates.push(s);
         }
       };
+      let firstBlockRead = mintHistoryComplete;
       if (mintHistoryComplete) for (const s of mintSigs) add(s);
+      const curveSigs = await curveSigsP;
+      const oldestCurve = curveSigs?.[curveSigs.length - 1];
+      if (curveSigs && (curveSigs.length < COLLECT.CURVE_SIGNATURES || (oldestCurve !== undefined && oldestCurve.slot <= lo))) {
+        firstBlockRead = true;
+        for (const s of curveSigs) add(s);
+      }
       // The deployer's own history often holds the bundle transactions that bought alongside it.
       const deployerTrace = await traceOrigin(deployer);
       if (deployerTrace) for (const s of deployerTrace.sigs) add(s);
@@ -706,7 +760,34 @@ export async function collectFacts(mint: string, opts: AnalyzeOptions): Promise<
         }
         for (const s of sigs) add(s);
       }
-      if (!mintHistoryComplete) note("Same-block buyers were checked only among the top holders, because this coin's first block could not be read in full.");
+      if (!firstBlockRead) {
+        // Read the coin's history backwards from a transaction we already know that happened shortly
+        // after its first two blocks, down to the creation ("before" may be any transaction; "until"
+        // stops at the creation). This reaches the first block even when the coin has a long history.
+        const ata = typeof tokenProgram === "string" ? associatedTokenAddress(deployer, mint, tokenProgram) : null;
+        const ataSigs = ata ? await getSigs(ata, COLLECT.DEPLOYER_TOKEN_ACCOUNT_SIGNATURES, P.DEPLOYER).catch(() => []) : [];
+        const known = [ataSigs, deployerTrace?.sigs ?? [], ...holderSigs.values()];
+        let anchor: SigInfo | null = null;
+        for (const list of known) {
+          for (const s of list) {
+            if (s.slot > hi && s.slot - lo <= COLLECT.FIRST_BLOCK_ANCHOR_SLOTS && (anchor === null || s.slot < anchor.slot)) anchor = s;
+          }
+        }
+        if (anchor) {
+          const window = await settle(
+            loader
+              .load<unknown>("getSignaturesForAddress", [mint, { limit: COLLECT.MINT_SIGNATURE_PAGE, before: anchor.signature, until: creation.signature, commitment: "confirmed" }], {
+                priority: P.EARLY,
+              })
+              .then((v) => parseSignatures(v)),
+          );
+          if (window.ok && window.value && window.value.length < COLLECT.MINT_SIGNATURE_PAGE) {
+            firstBlockRead = true;
+            for (const s of window.value) add(s);
+          } else if (!window.ok) explain(window.error, "the trades in the coin's first block");
+        }
+      }
+      if (!firstBlockRead) note("Same-block buyers were checked only among the top holders, because this coin's first block could not be read in full.");
       if (unchecked > 0) note(`${unchecked} top holder(s) have histories too long to tell whether they bought in the first block.`);
       candidates.sort((a, b) => a.slot - b.slot);
       if (candidates.length > COLLECT.EARLY_BUY_TX_CAP) note(`There were more than ${COLLECT.EARLY_BUY_TX_CAP} transactions in the first two blocks; only the first ${COLLECT.EARLY_BUY_TX_CAP} were checked.`);
@@ -931,21 +1012,31 @@ export async function collectFacts(mint: string, opts: AnalyzeOptions): Promise<
 
 const round9 = (n: number) => Math.round(n * 1e9) / 1e9;
 
-/** Holder rows from a getProgramAccounts answer with dataSlice {offset 32, length 40} (owner + amount). */
-export function holderRowsFromProgramAccounts(value: unknown, decimals: number): HolderRow[] {
+/** Size of a classic SPL token account (Token-2022 accounts can be larger). */
+const SPL_TOKEN_ACCOUNT_SIZE = 165;
+
+/**
+ * Holder rows from a getProgramAccounts answer with dataSlice {offset 32, length 40} (owner + amount),
+ * largest first. Only the `limit` largest are returned; owner addresses are encoded for those only
+ * (base58 is the expensive part, and a Worker has little CPU).
+ */
+export function holderRowsFromProgramAccounts(value: unknown, decimals: number, limit = Number.POSITIVE_INFINITY): HolderRow[] {
   const list = Array.isArray(value) ? value : [];
-  const rows: HolderRow[] = [];
+  const found: { tokenAccount: string; bytes: Uint8Array; raw: bigint }[] = [];
   for (const item of list) {
     if (!isObj(item) || typeof item.pubkey !== "string" || !isObj(item.account)) continue;
     const data = item.account.data;
     const bytes = Array.isArray(data) && typeof data[0] === "string" ? base64ToBytes(data[0]) : null;
     if (!bytes || bytes.length < 40) continue;
-    const owner = encodeBase58(bytes.subarray(0, 32));
     const raw = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(32, true);
-    const amount = Number(raw) / 10 ** decimals;
-    if (amount > 0) rows.push({ tokenAccount: item.pubkey, owner, amount });
+    if (raw > 0n) found.push({ tokenAccount: item.pubkey, bytes, raw });
   }
-  return rows.sort((a, b) => b.amount - a.amount);
+  found.sort((a, b) => (a.raw === b.raw ? a.tokenAccount.localeCompare(b.tokenAccount) : a.raw > b.raw ? -1 : 1));
+  return found.slice(0, Math.max(0, limit)).map((f) => ({
+    tokenAccount: f.tokenAccount,
+    owner: encodeBase58(f.bytes.subarray(0, 32)),
+    amount: Number(f.raw) / 10 ** decimals,
+  }));
 }
 
 /** Launches by `wallet` among its transactions, with dev sells seen in the same sample. */

@@ -1,30 +1,37 @@
 /**
- * THE STICKER: a printed window label for one coin.
+ * THE STICKER for one coin, in the owner's final "ultra minimal" design (docs/DESIGN.md,
+ * docs/design/min/sticker.html): one quiet column, one big purple number, rating dots,
+ * hairlines, monospace wallets, the family tree, a small wallet graph and plain notes.
  *
- * Design rules (docs/DESIGN.md): white paper, black ink, 1px rules, blue links, red only for
- * warnings. Every number links to its evidence ("receipts", dotted underline). Every wallet
- * carries data-w / data-g attributes so msrp.js can highlight it, and every wallet linked to it,
- * across the whole page. Unknown values say "Unknown" and why; never 0.
+ * Rules kept from every earlier version:
+ * - Every number links to its evidence (class "ev": Solscan, DEX Screener or the rows below).
+ * - Every wallet carries data-w / data-g so msrp.js can highlight it and every wallet linked to it.
+ * - Unknown is printed as "Unknown" with the reason, never as 0.
+ * - Shares: crowd numbers are % of TOTAL supply; headline insider/independent are % of
+ *   CIRCULATING supply (outside the curve, pools and burn). Holders outside the top 20 are
+ *   neither insider nor independent: they are shown as untraced, never as independent.
  */
-import type { Cluster, ClusterReason, Finding, HolderView, PageContext, Rating, Severity, Sticker } from "../types";
+import type { Cluster, ClusterReason, Finding, HolderView, PageContext, Rating, Severity, Stars, Sticker } from "../types";
 import { LIMITS, THRESHOLDS } from "../config";
 import { cleanLabel, esc, isSignature, safeUrl } from "./escape";
 import {
   UNKNOWN,
-  dateTime,
+  dayTime,
   iso,
+  joinAnd,
   makeShortener,
   minutes,
   pct,
   pctChange,
   plural,
+  seconds,
   sol,
-  starLabel,
   starText,
   usdFull,
   usdPrice,
   usdShort,
 } from "./format";
+import { walletGraph } from "./graph";
 import { ext } from "./layout";
 import { abs, external, paths } from "./paths";
 
@@ -46,42 +53,37 @@ export function isExample(s: Sticker): boolean {
   return s.coverage.notes.some((n) => /^example data/i.test(n));
 }
 
+/** Five 7px dots, `stars` of them purple; "Not rated" when there was too little evidence. */
+export function dots(stars: Stars): string {
+  if (stars === null) return `<span class="nr">Not rated</span>`;
+  let out = "";
+  for (let i = 0; i < 5; i++) out += i < stars ? `<i class="on"></i>` : "<i></i>";
+  return `<span class="dots" role="img" aria-label="${stars} of 5">${out}</span>`;
+}
+
+/** Kept for callers of the old API: a rating as dots. */
+export function stars(r: Rating): string {
+  return dots(r.stars);
+}
+
 /** "Unknown" plus a short reason, so a missing number is never mistaken for zero. */
 function unknown(reason: string): string {
-  return `<span class="u">${UNKNOWN}</span> <small class="why">${esc(reason)}</small>`;
+  return `<span class="u">${UNKNOWN}</span><small class="rs"> · ${esc(reason)}</small>`;
 }
 
-/** Plain stars, never bold; screen readers hear "2 of 5 stars". */
-export function stars(r: Rating): string {
-  const text = starText(r.stars);
-  return r.stars === null
-    ? `<span class="st nr">${text}</span>`
-    : `<span class="st" role="img" aria-label="${starLabel(r.stars)}">${text}</span>`;
-}
-
-/** A dotted-underlined number that links to the evidence behind it. `text` must be escaped. */
+/** A number that links to the evidence behind it (dotted underline on hover). `text` must be escaped. */
 function receipt(href: string, text: string, title: string): string {
-  const external = /^https?:/.test(href);
-  return external
-    ? `<a class="r" href="${esc(href)}" rel="noopener nofollow" target="_blank" title="${esc(title)}">${text}</a>`
-    : `<a class="r" href="${esc(href)}" title="${esc(title)}">${text}</a>`;
+  return /^https?:/.test(href)
+    ? `<a class="ev" href="${esc(href)}" rel="noopener nofollow" target="_blank" title="${esc(title)}">${text}</a>`
+    : `<a class="ev" href="${esc(href)}" title="${esc(title)}">${text}</a>`;
 }
 
-/** Key/value row with a dotted leader, like a printed price list. `value` is HTML. */
-function kv(label: string, value: string, opts: { red?: boolean; note?: string } = {}): string {
-  return `<div class="kv${opts.red ? " red" : ""}"><span class="k">${esc(label)}</span><i></i><span class="v">${value}${opts.note ?? ""}</span></div>`;
+/** One hairline row: label on the left, value on the right. `value` is HTML. */
+function kv(label: string, value: string, cls = ""): string {
+  return `<div class="kv"><span>${esc(label)}</span><span class="v${cls ? ` ${cls}` : ""}">${value}</span></div>`;
 }
 
-const SEVERITY_WORD: Record<Severity, string> = {
-  danger: "Danger",
-  warning: "Warning",
-  caution: "Caution",
-  info: "Info",
-  good: "Good",
-  unknown: "Unknown",
-};
-
-const isRed = (sev: Severity | undefined) => sev === "danger" || sev === "warning";
+const SEP = ` <span class="sep">·</span> `;
 
 const REASON_TEXT: Record<ClusterReason, string> = {
   "shared-funder": "first SOL from the same wallet",
@@ -107,9 +109,9 @@ export function groupName(i: number): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Knows every address on the page, how to shorten it unambiguously, and which
- * highlighter groups it belongs to. Only links the engines established become groups:
- * a cluster ("c:<id>") or the deployer's funding family ("f:<funder>").
+ * Knows every address on the page, how to shorten it unambiguously, and which highlighter
+ * groups it belongs to. Only links the engines established become groups: a cluster
+ * ("c:<id>") or the deployer's funding family ("f:<funder>").
  */
 class Wallets {
   private groups = new Map<string, Set<string>>();
@@ -131,6 +133,8 @@ class Wallets {
       if (c.funder) all.push(c.funder);
     }
     for (const f of s.findings) all.push(...f.evidence);
+    if (typeof b.mintAuthority === "string") all.push(b.mintAuthority);
+    if (typeof b.freezeAuthority === "string") all.push(b.freezeAuthority);
     if (s.market?.pairAddress) all.push(s.market.pairAddress);
     this.short = makeShortener(all);
 
@@ -166,514 +170,478 @@ class Wallets {
     return ` data-w="${esc(addr)}"${keys.length ? ` data-g="${keys.join(" ")}"` : ""}`;
   }
 
-  /** A wallet (or mint) linked to Solscan, shortened, highlightable. */
-  link(addr: string, extraClass = ""): string {
+  /** A wallet (or mint) linked to Solscan, shortened, monospace, highlightable. `cls`: f = funder (yellow), d = dim. */
+  link(addr: string, cls = ""): string {
     return (
-      `<a class="w${extraClass ? ` ${extraClass}` : ""}" href="${esc(external.solscanAccount(addr))}" rel="noopener nofollow" ` +
-      `target="_blank" title="${esc(addr)}"${this.attrs(addr)}><span>${esc(this.short(addr))}</span></a>`
+      `<a class="wl${cls ? ` ${cls}` : ""}" href="${esc(external.solscanAccount(addr))}" rel="noopener nofollow" ` +
+      `target="_blank" title="${esc(addr)}"${this.attrs(addr)}>${esc(this.short(addr))}</a>`
     );
   }
 
   /** A transaction signature linked to Solscan. */
   tx(sig: string): string {
     return (
-      `<a class="w" href="${esc(external.solscanTx(sig))}" rel="noopener nofollow" target="_blank" title="${esc(sig)}">` +
-      `<span>tx ${esc(this.short(sig))}</span></a>`
+      `<a class="wl" href="${esc(external.solscanTx(sig))}" rel="noopener nofollow" target="_blank" title="${esc(sig)}">` +
+      `tx ${esc(this.short(sig))}</a>`
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Note marks: numbers next to figures that point at the matching note
+// Supply split (shares of TOTAL supply, from the holder rows, so everything adds up)
 // ---------------------------------------------------------------------------
 
-class Notes {
-  private byId = new Map<string, { n: number; f: Finding }>();
-  constructor(findings: Finding[]) {
-    findings.forEach((f, i) => this.byId.set(f.id, { n: i + 1, f }));
-  }
-  /** Superscript link to the note with this finding id, or "". */
-  mark(id: string): string {
-    const hit = this.byId.get(id);
-    return hit ? ` <sup><a class="nm" href="#n${hit.n}" title="${esc(hit.f.title)}">${hit.n}</a></sup>` : "";
-  }
-  severity(id: string): Severity | undefined {
-    return this.byId.get(id)?.f.severity;
-  }
+interface Split {
+  infra: number;
+  insider: number;
+  independent: number;
+  /** Top holders we couldn't trace. */
+  untraced: number;
+  /** Everything outside the top holders: not checked. */
+  outside: number;
+}
+
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
+function splitSupply(s: Sticker): Split | null {
+  const t = s.crowd.topHolders;
+  if (t.length === 0) return null;
+  const sum = (label: HolderView["label"]) => round1(t.filter((h) => h.label === label).reduce((a, h) => a + h.pctSupply, 0));
+  const infra = sum("infrastructure");
+  const insider = sum("insider");
+  const independent = sum("independent");
+  const untraced = sum("unknown");
+  const outside = round1(Math.max(0, 100 - infra - insider - independent - untraced));
+  return { infra, insider, independent, untraced, outside };
+}
+
+/** What the infrastructure is made of, for sentences: "the bonding curve", "pools", "burned coins". */
+function infraParts(s: Sticker): string[] {
+  const kinds = new Set(s.crowd.topHolders.filter((h) => h.label === "infrastructure").map((h) => h.kind));
+  const parts: string[] = [];
+  if (kinds.has("bonding-curve")) parts.push("the bonding curve");
+  if (kinds.has("pool") || kinds.has("program") || kinds.has("wallet")) parts.push("pools");
+  if (kinds.has("burn")) parts.push("burned coins");
+  return parts;
+}
+
+/** "the supply outside the bonding curve and pools" / "the supply". */
+function circulatingWords(s: Sticker): string {
+  const parts = infraParts(s);
+  return parts.length ? `the supply outside ${joinAnd(parts)}` : "the supply";
+}
+
+/** Short legend word for the infrastructure slice. */
+function infraWord(s: Sticker): string {
+  const parts = infraParts(s);
+  if (parts.length === 1 && parts[0] === "the bonding curve") return "curve";
+  if (parts.length === 1 && parts[0] === "burned coins") return "burned";
+  if (parts.includes("the bonding curve")) return "curve & pools";
+  return "pools";
 }
 
 // ---------------------------------------------------------------------------
 // Sections
 // ---------------------------------------------------------------------------
 
-function headSection(ctx: PageContext, s: Sticker, notes: Notes): string {
+function where(s: Sticker): string {
   const b = s.build;
-  let where: string;
-  if (b.launchpad === "pump.fun") {
-    if (b.graduated === true) where = "pump.fun, graduated from the bonding curve";
-    else if (b.graduated === false)
-      where = `pump.fun, still on the bonding curve${b.curveProgressPct !== null ? ` (${pct(b.curveProgressPct)} complete)` : ""}`;
-    else where = "pump.fun";
-  } else where = "Launchpad unknown";
-  return (
-    `<section class="sec head">` +
-    (isExample(s) ? `<span class="ex">example data</span>` : "") +
-    `<h2>MSRP window sticker</h2>` +
-    `<h1>${esc(coinTitle(s.name, s.symbol))}</h1>` +
-    `<p class="mint"><span class="m" title="Coin address (mint)">${esc(s.mint)}</span> ` +
-    `<button type="button" class="copy" hidden data-copy="${esc(s.mint)}">copy address</button> ` +
-    ext(external.solscanToken(s.mint), "Solscan") +
-    `</p>` +
-    `<p class="sub">${esc(where)}${notes.mark("market.bonding-curve")}. ` +
-    `Created ${b.createdAt !== null ? `<time datetime="${iso(b.createdAt)}">${dateTime(b.createdAt)}</time>` : "at an unknown time"}. ` +
-    `Checked <time datetime="${iso(s.computedAt)}">${dateTime(s.computedAt)}</time>.</p>` +
-    `<p class="url m">${esc(abs(ctx, paths.coin(s.mint)))}</p>` +
-    `</section>`
-  );
+  if (b.launchpad !== "pump.fun") return "launchpad unknown";
+  if (b.graduated === true) return "pump.fun, graduated";
+  if (b.graduated === false) return `pump.fun, bonding curve${b.curveProgressPct !== null ? ` ${pct(b.curveProgressPct)}` : ""}`;
+  return "pump.fun";
 }
 
-function bigSection(s: Sticker): string {
+function coinHeader(s: Sticker): string {
+  const name = cleanLabel(s.name, 48);
+  const sym = cleanLabel(s.symbol, 16);
+  const main = name ?? (sym ? `$${sym}` : "Unnamed coin");
+  const second = name && sym ? ` <span>$${esc(sym)}</span>` : "";
+  const mintShort = s.mint.length > 20 ? `${s.mint.slice(0, 8)}…${s.mint.slice(-6)}` : s.mint;
+  const created = s.build.createdAt !== null ? `created <time datetime="${iso(s.build.createdAt)}">${esc(dayTime(s.build.createdAt))}</time>` : `created ${UNKNOWN.toLowerCase()}`;
+  const bits = [
+    `<a class="m ev" href="${esc(external.solscanToken(s.mint))}" rel="noopener nofollow" target="_blank" title="${esc(s.mint)}">${esc(mintShort)}</a>` +
+      `<button type="button" class="cp" data-copy="${esc(s.mint)}" hidden>copy</button>`,
+    esc(where(s)),
+    created,
+  ];
+  if (isExample(s)) bits.push(`<span class="ex">example data</span>`);
+  return `<header class="coin"><h1>${esc(main)}${second}</h1><p class="meta">${bits.join(SEP)}</p></header>`;
+}
+
+function hero(s: Sticker): string {
   const h = s.headline;
   const pairUrl = safeUrl(s.market?.pairUrl) ?? external.dexscreener(s.mint);
-  const cap =
-    h.marketCapUsd !== null
-      ? receipt(pairUrl, esc(usdShort(h.marketCapUsd)), "Market cap from DEX Screener")
-      : `<span class="u">${UNKNOWN}</span>`;
-  const capWhy = h.marketCapUsd !== null ? "from DEX Screener" : "no market data found";
+  const cap = h.marketCapUsd;
+  const price = h.stickerPriceUsd;
+  const ind = h.independentPct;
 
-  const share = independentOfTotal(s);
-  const price =
-    h.stickerPriceUsd !== null
-      ? receipt("#holders", esc(usdShort(h.stickerPriceUsd)), "Market cap × share of supply held by independent wallets")
-      : `<span class="u">${UNKNOWN}</span>`;
-  const priceWhy =
-    h.stickerPriceUsd !== null
-      ? share !== null
-        ? `market cap × ${pct(share)} of supply`
-        : "market cap × independent share of supply"
-      : h.marketCapUsd === null
-        ? "needs the market cap"
-        : "needs the holder check";
+  const big =
+    price !== null
+      ? receipt("#holders", `<em>${esc(usdShort(price))}</em>`, "Market cap × share of total supply held by independent wallets")
+      : `<em class="u">${UNKNOWN}</em>`;
+  const of = cap !== null ? ` <span class="of">/ ${receipt(pairUrl, esc(usdShort(cap)), "Market cap on DEX Screener")}</span>` : "";
+  const indB = ind !== null ? `<b>${esc(pct(ind))}</b>` : "";
+  const capB = cap !== null ? `<b>${esc(usdShort(cap))}</b>` : "";
+  const traceGap =
+    s.crowd.topHolders.length === 0
+      ? "we couldn't read the largest holders"
+      : "wallets we couldn't trace hold more than half of the supply we checked";
 
-  const ind =
-    h.independentPct !== null
-      ? receipt("#holders", esc(pct(h.independentPct)), "Share of circulating supply held by independent wallets")
-      : `<span class="u">${UNKNOWN}</span>`;
-  const indWhy = h.independentPct !== null ? "of circulating supply" : "holders couldn't be checked";
-
+  let text: string;
+  if (price !== null && cap !== null) {
+    text =
+      `Of this coin's ${capB} market cap, <b>${esc(usdShort(price))}</b> is held by wallets with no link we could find to the creator or to each other.` +
+      (ind !== null ? ` That's ${indB} of ${esc(circulatingWords(s))}.` : "");
+  } else if (cap !== null) {
+    text = `No sticker price: ${esc(traceGap)}, so we can't say how much of the ${capB} market cap independent wallets hold.`;
+  } else if (ind !== null) {
+    text = `No sticker price: DEX Screener had no market cap for this coin when we checked. Independent wallets hold ${indB} of ${esc(circulatingWords(s))}.`;
+  } else {
+    text = `No sticker price: DEX Screener had no market cap for this coin when we checked, and ${esc(traceGap)}.`;
+  }
   return (
-    `<section class="sec big">` +
-    `<div><small>Market cap</small><strong>${cap}</strong><small>${esc(capWhy)}</small></div>` +
-    `<div class="sp"><small>Sticker price: held by independent wallets</small><strong>${price}</strong><small>${esc(priceWhy)}</small></div>` +
-    `<div><small>Independent share</small><strong>${ind}</strong><small>${esc(indWhy)}</small></div>` +
-    `</section>`
+    `<div class="hero"><p class="n">${big}${of}</p>` +
+    `<p class="say">${text}</p></div>`
   );
 }
 
-function ratingsSection(s: Sticker): string {
-  const row = (label: string, r: Rating, strong = false) =>
-    `<tr${strong ? ' class="ov"' : ""}><th scope="row">${strong ? `<b>${esc(label)}</b>` : esc(label)}</th>` +
-    `<td class="sc">${stars(r)}</td><td class="rs">${esc(r.reason)}</td></tr>`;
+function rates(s: Sticker): string {
+  const r = s.ratings;
+  const cell = (label: string, rating: Rating, href: string, ov = false) =>
+    `<a class="rt${ov ? " ov" : ""}" href="${href}" title="${esc(rating.reason)}"><small>${esc(label)}</small>${dots(rating.stars)}</a>`;
   return (
-    `<section class="sec" id="ratings"><h2>Ratings (out of 5)</h2>` +
-    `<table class="rt"><tbody>` +
-    row("Who made it", s.ratings.build) +
-    row("Who holds it", s.ratings.crowd) +
-    row("Market", s.ratings.market) +
-    row("Overall", s.ratings.overall, true) +
-    `</tbody></table>` +
-    `<p class="fine">Stars measure how open the ownership is, not where the price goes. ` +
-    `<a href="${paths.methodology}">How stars are given</a>.</p>` +
-    `</section>`
+    `<div class="rates" id="ratings">` +
+    cell("Who made it", r.build, "#made") +
+    cell("Who holds it", r.crowd, "#holders") +
+    cell("Market", r.market, "#market") +
+    cell("Overall", r.overall, "#notes", true) +
+    `</div>` +
+    `<p class="why">${esc(r.overall.reason)} Ratings measure how open the ownership is, not where the price goes. ` +
+    `<a href="${paths.methodology}#overall">How ratings work</a></p>`
   );
 }
 
-function buildSection(ctx: PageContext, s: Sticker, w: Wallets, notes: Notes): string {
+function madeLead(s: Sticker, w: Wallets): string {
   const b = s.build;
-  const rows: string[] = [];
-  rows.push(
+  if (!b.deployer) return `We couldn't find the transaction that created this coin, so who made it is ${UNKNOWN.toLowerCase()}.`;
+  const D = w.link(b.deployer);
+  const siblings = b.family.filter((m) => m.role === "sibling").length;
+  const launches = (n: number) => receipt("#tree", esc(plural(n, "coin")), "Launches seen, listed in the family tree below");
+  const fast = (n: number) =>
+    n > 0
+      ? ` and sold within ${THRESHOLDS.FAST_DEV_SELL_MIN} minutes on ${receipt("#tree", esc(String(n)), "Launches where the launching wallet sold quickly")}.`
+      : `, with no sell within ${THRESHOLDS.FAST_DEV_SELL_MIN} minutes seen.`;
+
+  if (!b.funder) {
+    return (
+      `The creator ${D} got its first SOL from a wallet we couldn't find (it was beyond the transactions we read), so its funder and family are ${UNKNOWN.toLowerCase()}. ` +
+      (b.deployerLaunchCount > 0
+        ? `It launched ${launches(b.deployerLaunchCount)} in the transactions we sampled${fast(b.familyFastDevSellCount)}`
+        : `We saw no other launches from it in the transactions we sampled.`)
+    );
+  }
+  let t = `The creator ${D} was funded by ${w.link(b.funder, "f")}`;
+  if (b.deployerFundedBeforeLaunchMin !== null) {
+    t += ` ${receipt(external.solscanAccount(b.deployer), esc(minutes(b.deployerFundedBeforeLaunchMin)), "The creator's first incoming SOL, on Solscan")} before launch`;
+  }
+  t += ".";
+  t += siblings > 0 ? ` That wallet funded ${receipt("#tree", esc(plural(siblings, "other wallet")), "Wallets the same funder paid")}.` : " We found no other wallets it funded.";
+  if (b.familyLaunchCount > 0) t += ` ${siblings > 0 ? "Together they" : "It"} launched ${launches(b.familyLaunchCount)}${fast(b.familyFastDevSellCount)}`;
+  else t += " We saw no launches from them in the transactions we sampled.";
+  if (b.sentBackToFunderSol > 0) {
+    t += ` ${receipt(external.solscanAccount(b.funder), esc(sol(b.sentBackToFunderSol)), "The funder wallet on Solscan")} went back to the funder.`;
+  }
+  return t;
+}
+
+/** The family as aligned monospace text, like a file listing. No box. */
+function familyTree(s: Sticker, w: Wallets): string {
+  const b = s.build;
+  if (!b.deployer) return "";
+  const held = new Map(s.crowd.topHolders.map((h) => [h.owner, h]));
+  const deployer = b.family.find((m) => m.role === "deployer");
+  const siblings = b.family.filter((m) => m.role === "sibling");
+  const MAX = 6;
+
+  interface Row {
+    addr: string | null;
+    text: string;
+    tag: string;
+    tagCls: string;
+    launches: number;
+    fast: number;
+  }
+  const rows: Row[] = [];
+  const holdTag = (addr: string): [string, string] => {
+    const h = held.get(addr);
+    return h && h.label === "insider" ? [`holds ${pct(h.pctSupply)}`, "r"] : ["", ""];
+  };
+  rows.push({
+    addr: b.deployer,
+    text: w.short(b.deployer),
+    tag: "this coin",
+    tagCls: "t",
+    launches: deployer?.launches ?? b.deployerLaunchCount,
+    fast: deployer?.launchesWithFastDevSell ?? 0,
+  });
+  for (const m of siblings.slice(0, MAX - 1)) {
+    const [tag, tagCls] = holdTag(m.wallet);
+    rows.push({ addr: m.wallet, text: w.short(m.wallet), tag, tagCls, launches: m.launches, fast: m.launchesWithFastDevSell });
+  }
+  const rest = siblings.slice(MAX - 1);
+  if (rest.length) {
+    rows.push({
+      addr: null,
+      text: `+ ${rest.length} more`,
+      tag: "",
+      tagCls: "",
+      launches: rest.reduce((a, m) => a + m.launches, 0),
+      fast: rest.reduce((a, m) => a + m.launchesWithFastDevSell, 0),
+    });
+  }
+
+  const addrW = Math.max(...rows.map((r) => r.text.length), b.funder ? w.short(b.funder).length - 3 : 0);
+  const tagW = Math.max(9, ...rows.map((r) => r.tag.length));
+  const launchText = (n: number) => (n === 0 ? "no launches" : plural(n, "launch", "launches"));
+  const lw = Math.max(...rows.map((r) => launchText(r.launches).length));
+  const sp = (n: number) => " ".repeat(Math.max(0, n));
+
+  const lines: string[] = [];
+  if (b.funder) {
+    const f = w.short(b.funder);
+    lines.push(`${w.link(b.funder, "f")}${sp(3 + addrW + 2 - f.length)}<span class="c">funder</span>`);
+  } else {
+    lines.push(`<span class="c">? funder ${UNKNOWN.toLowerCase()}</span>`);
+  }
+  rows.forEach((r, i) => {
+    const branch = i === rows.length - 1 ? "└─ " : "├─ ";
+    const addr = r.addr ? w.link(r.addr) : `<span class="c">${esc(r.text)}</span>`;
+    const lt = launchText(r.launches);
+    const tag = r.tag ? `<span class="${r.tagCls}">${esc(r.tag)}</span>` : "";
+    const sells =
+      r.launches > 0
+        ? `  <span class="${r.fast > 0 ? "r" : "c"}">${esc(`${r.fast} sold <${THRESHOLDS.FAST_DEV_SELL_MIN}m`)}</span>`
+        : "";
+    lines.push(
+      `${branch}${addr}${sp(addrW - r.text.length + 2)}${tag}${sp(tagW - r.tag.length + 2)}` +
+        `${sp(lw - lt.length)}<span class="${r.launches ? "" : "c"}">${esc(lt)}</span>${sells}`,
+    );
+  });
+
+  const sampled = b.funder
+    ? `Wallets the funder paid, from up to ${LIMITS.FUNDER_TX_SAMPLE} of its transactions (at most ${LIMITS.MAX_SIBLINGS} checked). ` +
+      `Launch counts come from each wallet's latest ${LIMITS.LAUNCH_SIGNATURE_SAMPLE} transactions.`
+    : "We couldn't find the creator's funder, so we couldn't look for other wallets it paid.";
+  return `<pre class="tree" id="tree" aria-label="Family tree">${lines.join("\n")}</pre><p class="fine">${esc(sampled)}</p>`;
+}
+
+function authority(v: string | null | "unknown", w: Wallets, effect: string): [string, string] {
+  if (v === null) return ["removed", "g"];
+  if (v === "unknown") return [unknown("couldn't read the coin's settings"), ""];
+  return [`still set, ${esc(effect)}: ${w.link(v)}`, "r"];
+}
+
+function madeSection(ctx: PageContext, s: Sticker, w: Wallets): string {
+  const b = s.build;
+  const graph = walletGraph(s, w);
+  const lead = `<p class="lead">${madeLead(s, w)}</p>`;
+  const [mintA, mintCls] = authority(b.mintAuthority, w, "more coins can be created");
+  const [frzA, frzCls] = authority(b.freezeAuthority, w, "holders' coins can be frozen");
+  const facts =
+    `<div class="kvs">` +
     kv(
-      "Creator wallet",
-      b.deployer ? w.link(b.deployer) : unknown("couldn't find the transaction that created the coin"),
-    ),
-  );
-  rows.push(
-    kv(
-      "Funded by",
-      b.funder
-        ? w.link(b.funder)
-        : b.deployer
-          ? unknown("its first SOL was beyond the transactions we read")
-          : unknown("needs the creator wallet"),
-    ),
-  );
-  rows.push(
-    kv(
-      "First SOL arrived",
+      "Creator's first SOL",
       b.deployerFundedBeforeLaunchMin !== null && b.deployer
-        ? receipt(
-            external.solscanAccount(b.deployer),
-            esc(`${minutes(b.deployerFundedBeforeLaunchMin)} before launch`),
-            "The creator wallet's first incoming SOL, on Solscan",
-          )
-        : unknown("funding time not found"),
-      { note: notes.mark("build.fresh-deployer"), red: isRed(notes.severity("build.fresh-deployer")) },
-    ),
-  );
-  rows.push(
+        ? receipt(external.solscanAccount(b.deployer), esc(`${minutes(b.deployerFundedBeforeLaunchMin)} before launch`), "The creator wallet on Solscan")
+        : unknown(b.deployer ? "funding time not found" : "needs the creator wallet"),
+      b.deployerFundedBeforeLaunchMin !== null && b.deployerFundedBeforeLaunchMin <= THRESHOLDS.FRESH_DEPLOYER_MIN ? "y" : "",
+    ) +
     kv(
       "Creator's buy at launch",
       b.devBuySol !== null && b.deployer
         ? receipt(external.solscanAccount(b.deployer), esc(sol(b.devBuySol)), "Buy inside the creation transaction")
         : unknown("not visible in the creation transaction"),
-      { note: notes.mark("build.dev-buy") },
-    ),
-  );
-
-  const siblings = b.family.filter((m) => m.role === "sibling").length;
-  const familyKnown = b.deployer !== null;
-  rows.push(
-    kv(
-      "Coins this creator launched",
-      familyKnown ? receipt("#family", esc(String(b.deployerLaunchCount)), "Launches seen from the creator wallet") : unknown("needs the creator wallet"),
-    ),
-  );
-  rows.push(
-    kv(
-      "Other wallets with the same funder",
-      b.funder ? receipt("#family", esc(String(Math.max(siblings, b.familySize - 1))), "Wallets the same funder paid") : unknown("needs the funder"),
-    ),
-  );
-  rows.push(
-    kv(
-      "Coins launched by these wallets",
-      familyKnown ? receipt("#family", esc(String(b.familyLaunchCount)), "Launches by the creator and same-funder wallets") : unknown("needs the creator wallet"),
-      { note: notes.mark("build.factory-pattern"), red: isRed(notes.severity("build.factory-pattern")) },
-    ),
-  );
-  rows.push(
-    kv(
-      `Creator sold within ${THRESHOLDS.FAST_DEV_SELL_MIN} min of launch`,
-      familyKnown
-        ? receipt("#family", esc(`${b.familyFastDevSellCount} of ${b.familyLaunchCount}`), "Launches where the creator wallet sold quickly")
-        : unknown("needs the creator wallet"),
-      { note: notes.mark("build.fast-dev-sells"), red: isRed(notes.severity("build.fast-dev-sells")) },
-    ),
-  );
-  rows.push(
+    ) +
     kv(
       "SOL sent back to the funder",
       b.funder ? receipt(external.solscanAccount(b.funder), esc(sol(b.sentBackToFunderSol)), "The funder wallet on Solscan") : unknown("needs the funder"),
-      { note: notes.mark("build.sweep"), red: isRed(notes.severity("build.sweep")) },
-    ),
-  );
-  rows.push(kv("Mint authority", authority(b.mintAuthority, w, "more coins can be created"), {
-    note: notes.mark("build.mint-authority"),
-    red: typeof b.mintAuthority === "string" && b.mintAuthority !== "unknown",
-  }));
-  rows.push(kv("Freeze authority", authority(b.freezeAuthority, w, "holders' coins can be frozen"), {
-    note: notes.mark("build.freeze-authority"),
-    red: typeof b.freezeAuthority === "string" && b.freezeAuthority !== "unknown",
-  }));
-
-  const extra = b.deployer ? `<p class="fine">${ext(external.solanaviewDev(ctx, b.deployer), "Deployer history on SolanaView")}</p>` : "";
-
+      b.funder && b.sentBackToFunderSol > 0 ? "r" : "",
+    ) +
+    kv("Mint authority", mintA, mintCls) +
+    kv("Freeze authority", frzA, frzCls) +
+    (b.deployer ? kv("Creator's other coins", ext(external.solanaviewDev(ctx, b.deployer), "on SolanaView ↗", 'title="Deployer history on SolanaView"')) : "") +
+    `</div>`;
   return (
-    `<section class="sec" id="build"><h2>Who made it</h2>` +
-    rows.join("") +
+    `<section id="made"><h2>Who made it</h2>` +
+    (graph ? `<div class="split">${lead}${graph}</div>` : lead) +
     familyTree(s, w) +
-    extra +
+    facts +
     `</section>`
   );
 }
 
-function authority(v: string | null | "unknown", w: Wallets, effect: string): string {
-  if (v === null) return "removed";
-  if (v === "unknown") return unknown("couldn't read the coin's settings");
-  return `still set (${esc(effect)}): ${w.link(v)}`;
-}
-
-/** The family as a plain monospace tree, like a file listing. */
-function familyTree(s: Sticker, w: Wallets): string {
-  const b = s.build;
-  const fam = b.family;
-  const funder = fam.find((m) => m.role === "funder");
-  const deployer = fam.find((m) => m.role === "deployer");
-  const siblings = fam.filter((m) => m.role === "sibling");
-  if (!b.deployer && !funder) return "";
-
-  const stats = (launches: number, fast: number, back: number): string => {
-    if (launches === 0 && back === 0) return "no launches seen";
-    const parts: string[] = [];
-    parts.push(plural(launches, "launch", "launches"));
-    if (launches > 0) parts.push(`${fast} sold within ${THRESHOLDS.FAST_DEV_SELL_MIN} min`);
-    if (back > 0) parts.push(`${sol(back)} back`);
-    return parts.join(", ");
-  };
-
-  const line = (branch: string, addrHtml: string, role: string, stat: string, cls = "") =>
-    `<div class="tl${cls}"><span class="ad"><span class="br">${branch}</span>${addrHtml}</span><span class="ro">${esc(role)}</span><span class="ts">${esc(stat)}</span></div>`;
-
-  const lines: string[] = [];
-  const children: { addr: string; role: string; stat: string }[] = [];
-  const deployerAddr = deployer?.wallet ?? b.deployer;
-  if (deployerAddr) {
-    children.push({
-      addr: deployerAddr,
-      role: "creator of this coin",
-      stat: deployer ? stats(deployer.launches, deployer.launchesWithFastDevSell, deployer.sentBackSol) : "",
-    });
-  }
-  for (const m of siblings) children.push({ addr: m.wallet, role: "", stat: stats(m.launches, m.launchesWithFastDevSell, m.sentBackSol) });
-
-  if (funder || b.funder) {
-    const f = funder?.wallet ?? b.funder ?? "";
-    lines.push(line("", w.link(f), "funder", ""));
-    children.forEach((c, i) => {
-      const last = i === children.length - 1;
-      lines.push(line(last ? "└─ " : "├─ ", w.link(c.addr), c.role, c.stat, c.role ? " me" : ""));
-    });
-  } else {
-    lines.push(line("?  ", `<span class="u">funder unknown</span>`, "", ""));
-    children.forEach((c) => lines.push(line("└─ ", w.link(c.addr), c.role, c.stat, " me")));
-  }
-
-  const sampled = b.funder
-    ? `Wallets the funder paid, from up to ${LIMITS.FUNDER_TX_SAMPLE} of its transactions (at most ${LIMITS.MAX_SIBLINGS} checked). Launch counts come from each wallet's recent ${LIMITS.LAUNCH_SIGNATURE_SAMPLE} transactions.`
-    : "We couldn't find the creator's funder, so we couldn't look for other wallets it paid.";
-  return (
-    `<h3 id="family">Family tree</h3>` +
-    `<div class="tree m">${lines.join("")}</div>` +
-    `<p class="fine">${esc(sampled)}</p>`
-  );
-}
-
-interface Split {
-  infra: number;
-  insider: number;
-  independent: number;
-  untraced: number;
-  outside: number;
-}
-
-/** Shares of TOTAL supply, from the holders table itself, so the rows always add up. */
-function splitSupply(s: Sticker): Split | null {
-  const t = s.crowd.topHolders;
-  if (t.length === 0) return null;
-  const sum = (label: HolderView["label"]) => t.filter((h) => h.label === label).reduce((a, h) => a + h.pctSupply, 0);
-  const infra = sum("infrastructure");
-  const insider = sum("insider");
-  const independent = sum("independent");
-  const untraced = sum("unknown");
-  const outside = Math.max(0, 100 - infra - insider - independent - untraced);
-  return { infra, insider, independent, untraced, outside };
-}
-
-function independentOfTotal(s: Sticker): number | null {
-  const split = splitSupply(s);
-  return split ? split.independent : null;
-}
-
-function kindLabel(h: HolderView, groupOf: Map<string, string>): string {
-  const group = h.clusterId ? groupOf.get(h.clusterId) : undefined;
+function holderLabel(h: HolderView, groupOf: Map<string, string>, groups: number): [string, string] {
+  const group = h.clusterId && groups > 1 ? groupOf.get(h.clusterId) : undefined;
+  const linked = group ? `linked, ${group.replace("Group ", "")}` : "linked";
   switch (h.kind) {
     case "bonding-curve":
-      return "bonding curve";
+      return ["bonding curve", "p"];
     case "pool":
-      return "pool";
+      return ["pool", "p"];
     case "burn":
-      return "burned";
+      return ["burned", "p"];
     case "program":
-      return "program account";
+      return ["program", "p"];
     case "creator":
-      return group ? `creator, ${group}` : "creator";
+      return ["creator", "r"];
     default:
-      if (h.label === "insider") return group ? `linked, ${group}` : "linked (launch-block buyer)";
-      if (h.label === "independent") return "independent";
-      if (h.label === "infrastructure") return "pool or program";
-      return "couldn't trace";
+      if (h.label === "insider") return [h.clusterId ? linked : "launch block", "r"];
+      if (h.label === "independent") return ["independent", "g"];
+      if (h.label === "infrastructure") return ["pool or program", "p"];
+      return ["untraced", "c"];
   }
 }
 
-function holdersSection(s: Sticker, w: Wallets, notes: Notes): string {
+function holdersSection(s: Sticker, w: Wallets): string {
   const c = s.crowd;
-  const split = splitSupply(s);
-  const groupOf = new Map<string, string>();
-  c.clusters.forEach((cl, i) => groupOf.set(cl.id, groupName(i)));
-
-  if (!split) {
+  const sp = splitSupply(s);
+  if (!sp) {
     return (
-      `<section class="sec" id="holders"><h2>Who holds it</h2>` +
-      kv("Holders checked", unknown("we couldn't read the largest holders")) +
+      `<section id="holders"><h2>Who holds it</h2>` +
+      `<p class="lead">We couldn't read the largest holders, so who holds it is ${UNKNOWN.toLowerCase()}.</p>` +
+      `<div class="kvs">${kv("Holders checked", unknown("no holder list"))}${kv("Independent share", unknown("needs the holder list"))}</div>` +
       `</section>`
     );
   }
-
-  const insiderRed = isRed(notes.severity("crowd.insiders"));
   const n = c.topHolders.length;
-  const rows =
-    kv("Bonding curve, pools and burn", esc(pct(split.infra)), { note: notes.mark("crowd.infrastructure") }) +
-    kv("Creator and wallets linked to it", esc(pct(split.insider)), { red: insiderRed, note: notes.mark("crowd.insiders") }) +
-    kv("Independent wallets", esc(pct(split.independent))) +
-    kv("Couldn't trace", esc(pct(split.untraced)), { note: notes.mark("crowd.untraced") }) +
-    kv(`Outside the top ${n} (not checked)`, esc(pct(split.outside)), { note: notes.mark("crowd.long-tail") });
-
-  const bar = supplyBar([
-    ["Linked", split.insider, FILL.ins],
-    ["Pools and curve", split.infra, FILL.inf],
-    ["Independent", split.independent, FILL.ind],
-    ["Not checked", split.untraced + split.outside, FILL.unk],
-  ]);
+  const rest = round1(sp.untraced + sp.outside);
+  const iw = infraWord(s);
+  const seg = (v: number, cls: string, name: string) =>
+    v > 0 ? `<span class="${cls}" style="flex-grow:${v}" title="${esc(`${name}: ${pct(v)} of total supply`)}"></span>` : "";
+  const bar =
+    `<div class="bar" role="img" aria-label="${esc(
+      `Total supply: ${pct(sp.insider)} linked, ${pct(sp.infra)} ${iw}, ${pct(sp.independent)} independent, ${pct(rest)} untraced or not checked`,
+    )}">` +
+    seg(sp.insider, "lk", "Linked") +
+    seg(sp.infra, "ps", iw) +
+    seg(sp.independent, "in", "Independent") +
+    seg(rest, "ut", "Untraced or not checked") +
+    `</div>`;
+  const leg = (v: number, label: string, cls = "") => `<span${cls ? ` class="${cls}"` : ""}><b>${esc(pct(v))}</b>${esc(label)}</span>`;
+  const legend =
+    `<div class="leg">` +
+    leg(sp.insider, "linked") +
+    leg(sp.infra, iw) +
+    leg(sp.independent, "independent") +
+    (rest > 0 ? leg(rest, "untraced", "dim") : "") +
+    `</div>`;
 
   const h = s.headline;
   const circ =
-    h.insiderPct !== null || h.independentPct !== null
-      ? `<p class="fine keep">Shares of total supply. Leaving out the bonding curve and pools, insiders hold ${esc(pct(h.insiderPct))} and independent wallets ${esc(pct(h.independentPct))} of what's left.</p>`
-      : `<p class="fine keep">Shares of total supply.</p>`;
+    h.independentPct !== null && h.insiderPct !== null
+      ? ` Of ${esc(circulatingWords(s))}, independent wallets hold <b>${esc(pct(h.independentPct))}</b> and linked wallets <b>${esc(pct(h.insiderPct))}</b>.`
+      : ` Too much of the supply is untraced to give insider and independent shares of ${esc(circulatingWords(s))}.`;
+  const untr =
+    rest > 0
+      ? ` Untraced: ${esc(pct(sp.untraced))} in top holders we couldn't trace and ${esc(pct(sp.outside))} outside the top ${n}, counted as neither linked nor independent.`
+      : "";
+  const explain = `<p class="fine">Shares of total supply.${circ}${untr}</p>`;
+
+  const groupOf = new Map<string, string>();
+  c.clusters.forEach((cl, i) => groupOf.set(cl.id, groupName(i)));
+  const row = (hv: HolderView, i: number) => {
+    const [label, cls] = holderLabel(hv, groupOf, c.clusters.length);
+    const from = hv.funder ? ` title="${esc(`first SOL from ${w.short(hv.funder)}`)}"` : "";
+    const infra = hv.label === "infrastructure";
+    return (
+      `<tr><td class="rk">${i + 1}</td><td>${w.link(hv.owner, infra ? "d" : "")}</td>` +
+      `<td class="pc">${receipt(external.solscanAccount(hv.owner), esc(pct(hv.pctSupply)), "Wallet on Solscan")}</td>` +
+      `<td class="lb ${cls}"${from}>${esc(label)}</td></tr>`
+    );
+  };
+  const outsideRow =
+    sp.outside > 0
+      ? `<tr class="dim"><td class="rk"></td><td>outside the top ${n}</td><td class="pc">${esc(pct(sp.outside))}</td><td class="lb c">not checked</td></tr>`
+      : "";
+  const table = (list: HolderView[], offset: number, last: boolean) =>
+    `<table class="hold"><colgroup><col class="rk"><col><col class="pc"><col class="lb"></colgroup><thead class="vh"><tr><th scope="col">Rank</th><th scope="col">Wallet</th><th scope="col">Share of supply</th><th scope="col">What it is</th></tr></thead><tbody>` +
+    list.map((hv, i) => row(hv, i + offset)).join("") +
+    (last ? outsideRow : "") +
+    `</tbody></table>`;
+  const FIRST = 10;
+  const head = c.topHolders.slice(0, FIRST);
+  const more = c.topHolders.slice(FIRST);
+  const rows =
+    table(head, 0, more.length === 0) +
+    (more.length ? `<details class="more"><summary>${esc(`Show ${plural(more.length, "more holder")}`)}</summary>${table(more, FIRST, true)}</details>` : "");
 
   const groups = c.clusters.length
-    ? `<h3>Linked groups</h3><ul class="groups">${c.clusters.map((cl, i) => clusterItem(cl, i, w, notes)).join("")}</ul>`
-    : `<h3>Linked groups</h3><p>None found among the top ${n} holders.</p>`;
+    ? `<h3>Linked groups</h3><ul class="grp">${c.clusters.map((cl, i) => clusterItem(cl, i, w)).join("")}</ul>`
+    : `<p class="fine">No linked groups among the top ${n} holders.</p>`;
 
-  const table =
-    `<h3>Top ${n} holders</h3>` +
-    `<table class="ht"><thead><tr><th scope="col" class="rk">#</th><th scope="col">Wallet</th><th scope="col" class="n">Supply</th><th scope="col">What it is</th><th scope="col">First SOL from</th></tr></thead><tbody>` +
-    c.topHolders
-      .map((hv, i) => {
-        const infra = hv.label === "infrastructure";
-        const cls = hv.label === "insider" ? "ins" : infra ? "inf" : hv.label === "unknown" ? "unk" : "ind";
-        const funder = hv.funder ? w.link(hv.funder) : infra ? "" : `<span class="dim">${hv.label === "unknown" ? "not found" : "long history"}</span>`;
-        return (
-          `<tr class="${cls}"><td class="rk">${i + 1}</td><td>${w.link(hv.owner)}</td>` +
-          `<td class="n">${receipt(external.solscanAccount(hv.owner), esc(pct(hv.pctSupply)), "Wallet on Solscan")}</td>` +
-          `<td class="lb">${esc(kindLabel(hv, groupOf))}</td><td class="fd">${funder}</td></tr>`
-        );
-      })
-      .join("") +
-    `</tbody></table>` +
-    `<p class="fine">"Long history" wallets have ${LIMITS.VETERAN_SIGNATURES}+ transactions; we don't trace them and count them as independent unless they bought in the launch block.</p>`;
-
-  return `<section class="sec" id="holders"><h2>Who holds it (top ${n})</h2>${rows}${bar}${circ}${groups}${table}</section>`;
-}
-
-/** Bar fills: black = linked, grey = pools, white = independent, hatched = not checked. */
-const FILL = { ins: "#000", inf: "#999", ind: "#fff", unk: "url(#msrp-hatch)" } as const;
-
-/**
- * One thin printed-style stacked bar as inline SVG (prints without "background graphics"
- * and needs no inline styles), plus its key.
- */
-function supplyBar(parts: [string, number, string][]): string {
-  // Percentage coordinates and no viewBox: the bar stretches to any width without distorting the hatching.
-  let x = 0;
-  const rects: string[] = [];
-  const total = parts.reduce((a, [, v]) => a + Math.max(0, v), 0) || 1;
-  const p = (n: number) => `${Math.round(n * 100) / 100}%`;
-  for (const [name, v, fill] of parts) {
-    if (v <= 0) continue;
-    const w = (Math.max(0, v) / total) * 100;
-    rects.push(`<rect x="${p(x)}" y="0" width="${p(w)}" height="12" fill="${fill}"><title>${esc(`${name}: ${pct(v)}`)}</title></rect>`);
-    if (x > 0) rects.push(`<line x1="${p(x)}" y1="0" x2="${p(x)}" y2="12" stroke="#000"/>`);
-    x += w;
-  }
-  const label = parts.map(([name, v]) => `${pct(v)} ${name.toLowerCase()}`).join(", ");
-  const swatch = (fill: string) =>
-    `<svg class="kk" width="11" height="11" aria-hidden="true"><rect x=".5" y=".5" width="10" height="10" fill="${fill}" stroke="#000"/></svg>`;
   return (
-    `<svg class="bar" width="100%" height="12" role="img" aria-label="${esc(`Total supply: ${label}`)}">` +
-    `<defs><pattern id="msrp-hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">` +
-    `<rect width="4" height="4" fill="#fff"/><line x1="0" y1="0" x2="0" y2="4" stroke="#000" stroke-width="1.4"/></pattern></defs>` +
-    rects.join("") +
-    `<rect x="0.5" y="0.5" width="99.9%" height="11" fill="none" stroke="#000"/></svg>` +
-    `<p class="key">${parts.map(([name, , fill]) => `<span>${swatch(fill)} ${esc(name.toLowerCase())}</span>`).join("")}</p>`
+    `<section id="holders"><h2>Who holds it</h2>${bar}${legend}${explain}${rows}${groups}` +
+    `<p class="fine">Wallets with ${LIMITS.VETERAN_SIGNATURES}+ transactions have too much history to trace; they count as independent unless they bought in the launch block.</p>` +
+    `</section>`
   );
 }
 
-function clusterItem(cl: Cluster, i: number, w: Wallets, notes: Notes): string {
-  const reasons = cl.reasons.map((r) => {
-    if (r === "shared-funder" && cl.funder) return `${esc(REASON_TEXT[r])} (${w.link(cl.funder)})`;
-    return esc(REASON_TEXT[r]);
-  });
+function clusterItem(cl: Cluster, i: number, w: Wallets): string {
+  const reasons = cl.reasons.map((r) => (r === "shared-funder" && cl.funder ? `${esc(REASON_TEXT[r])} (${w.link(cl.funder, "f")})` : esc(REASON_TEXT[r])));
   return (
-    `<li><b>${esc(groupName(i))}</b>: ${esc(plural(cl.wallets.length, "wallet"))} holding ${esc(pct(cl.pctSupply))}` +
-    `${notes.mark(`crowd.cluster.${cl.id}`)}. ${reasons.length ? `Linked by: ${reasons.join("; ")}.` : ""}` +
-    `<br><span class="ws">${cl.wallets.map((a) => w.link(a)).join(" ")}</span></li>`
+    `<li><span class="gn">${esc(groupName(i))}</span><span>${esc(plural(cl.wallets.length, "wallet"))} hold ${esc(pct(cl.pctSupply))} of supply.` +
+    `${reasons.length ? ` Linked by: ${reasons.join("; ")}.` : ""}<br><span class="ws">${cl.wallets.map((a) => w.link(a)).join(" ")}</span></span></li>`
   );
 }
 
-function marketSection(s: Sticker, notes: Notes): string {
+function marketSection(s: Sticker): string {
   const m = s.market;
   if (!m) {
-    return (
-      `<section class="sec" id="market"><h2>Market</h2>` +
-      kv("Trading", unknown("DEX Screener had no trading pair for this coin when we checked")) +
-      `</section>`
-    );
+    return `<section id="market"><h2>Market</h2><div class="kvs">${kv("Trading", unknown("DEX Screener had no trading pair when we checked"))}</div></section>`;
   }
   const pair = safeUrl(m.pairUrl) ?? external.dexscreener(s.mint);
   const money = (v: number | null, fmt: (n: number | null) => string, title: string) =>
     v !== null ? receipt(pair, esc(fmt(v)), title) : unknown("not reported");
   const ratio =
     m.liquidityUsd !== null && m.marketCapUsd !== null && m.marketCapUsd > 0
-      ? ` <small class="why">${esc(pct((m.liquidityUsd / m.marketCapUsd) * 100))} of market cap</small>`
+      ? `<small class="rs"> · ${esc(pct((m.liquidityUsd / m.marketCapUsd) * 100))} of market cap</small>`
       : "";
   const dex = cleanLabel(m.dex, 32);
   return (
-    `<section class="sec" id="market"><h2>Market</h2>` +
+    `<section id="market"><h2>Market</h2><div class="kvs">` +
     kv("Price", money(m.priceUsd, usdPrice, "Price on DEX Screener")) +
     kv("Market cap", money(m.marketCapUsd, usdFull, "Market cap on DEX Screener")) +
-    kv("Liquidity", money(m.liquidityUsd, usdFull, "Liquidity on DEX Screener") + ratio, {
-      note: notes.mark("market.liquidity"),
-      red: isRed(notes.severity("market.liquidity")),
-    }) +
-    kv("Volume, last 24 hours", money(m.volume24hUsd, usdFull, "24-hour volume on DEX Screener"), { note: notes.mark("market.volume") }) +
-    kv("Price change, last 24 hours", m.priceChange24hPct !== null ? esc(pctChange(m.priceChange24hPct)) : unknown("not reported")) +
+    kv("Liquidity", money(m.liquidityUsd, usdFull, "Liquidity on DEX Screener") + ratio) +
+    kv("Volume, 24 hours", money(m.volume24hUsd, usdFull, "24-hour volume on DEX Screener")) +
+    kv("Price change, 24 hours", m.priceChange24hPct !== null ? esc(pctChange(m.priceChange24hPct)) : unknown("not reported")) +
     kv("Trading on", dex ? ext(pair, esc(dex)) : unknown("not reported")) +
-    kv("Pair created", m.pairCreatedAt !== null ? esc(dateTime(m.pairCreatedAt)) : unknown("not reported")) +
-    `<p class="fine">Market numbers come from DEX Screener and can lag by a minute or two.</p>` +
-    `</section>`
+    kv("Pair created", m.pairCreatedAt !== null ? esc(dayTime(m.pairCreatedAt)) : unknown("not reported")) +
+    `</div><p class="fine">From DEX Screener; can lag by a minute or two.</p></section>`
   );
 }
 
+const DOT: Record<Severity, string> = { danger: "r", warning: "r", caution: "y", good: "g", info: "i", unknown: "c" };
+
 function notesSection(s: Sticker, w: Wallets): string {
-  if (s.findings.length === 0) {
-    return `<section class="sec" id="notes"><h2>Notes</h2><p>No notes. That can also mean we couldn't check much; see below.</p></section>`;
-  }
-  const MAX_EVIDENCE = 6;
+  const MAX_EVIDENCE = 4;
   const evidence = (ev: string[]) => {
     if (ev.length === 0) return "";
     const fmt = (e: string) => (isSignature(e) ? w.tx(e) : w.link(e));
-    const head = ev.slice(0, MAX_EVIDENCE).map(fmt).join(" ");
-    const rest = ev.slice(MAX_EVIDENCE);
-    return (
-      `<br><small class="evd">Evidence: ${head}` +
-      (rest.length ? ` <details><summary>${rest.length} more</summary>${rest.map(fmt).join(" ")}</details>` : "") +
-      `</small>`
-    );
+    const extra = ev.length - MAX_EVIDENCE;
+    return `<small class="ws">${ev.slice(0, MAX_EVIDENCE).map(fmt).join(" ")}${extra > 0 ? ` <span class="c">+${extra}</span>` : ""}</small>`;
   };
+  const item = (f: Finding, i: number) =>
+    `<li id="n${i + 1}" class="${DOT[f.severity] ?? "c"}"><i></i><div><p>${esc(f.title)}</p><small>${esc(f.detail)}</small>` +
+    `${f.severity === "info" || f.severity === "good" ? "" : evidence(f.evidence)}</div></li>`;
+  const gaps = s.coverage.notes.map((n) => `<li class="c"><i></i><div><p>${esc(n)}</p></div></li>`);
+  if (!s.coverage.complete) gaps.unshift(`<li class="c"><i></i><div><p>Some steps didn't finish in time. Anything marked Unknown above is why.</p></div></li>`);
+  const items = s.findings.map(item).concat(gaps);
   return (
-    `<section class="sec" id="notes"><h2>Notes</h2><ol class="notes">` +
-    s.findings
-      .map(
-        (f, i) =>
-          `<li id="n${i + 1}" class="sv-${esc(f.severity)}${isRed(f.severity) ? " red" : ""}">` +
-          `<span class="nn">${i + 1}</span><span class="sw">${SEVERITY_WORD[f.severity] ?? "Note"}</span>` +
-          `<span class="nt">${esc(f.title)}<br><small>${esc(f.detail)}</small>${evidence(f.evidence)}</span></li>`,
-      )
-      .join("") +
-    `</ol></section>`
+    `<section id="notes"><h2>Notes</h2>` +
+    (items.length ? `<ul class="notes">${items.join("")}</ul>` : `<p class="fine">No notes. Every step finished; each check still has limits, listed on the <a href="${paths.methodology}">methodology</a> page.</p>`) +
+    `</section>`
   );
-}
-
-function gapsSection(s: Sticker): string {
-  const cv = s.coverage;
-  const items = cv.notes.map((n) => `<li>${esc(n)}</li>`);
-  if (!cv.complete) items.unshift(`<li>Some steps didn't finish in time. Anything marked Unknown above is why.</li>`);
-  const list = items.length ? `<ul>${items.join("")}</ul>` : `<p>Every step finished. Each check still has limits; they're on the <a href="${paths.methodology}">methodology</a> page.</p>`;
-  const work =
-    `Work done: ${plural(cv.rpcRequests, "Solana request")}, ${plural(cv.dexRequests, "DEX Screener request")}` +
-    `, ${Math.round(cv.elapsedMs / 100) / 10} s.`;
-  return `<section class="sec" id="gaps"><h2>What we couldn't check</h2>${list}<p class="fine">${esc(work)}</p></section>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -688,49 +656,58 @@ export function shareText(s: Sticker): string {
   return `${parts.join(", ")}.`;
 }
 
-/** The sticker itself plus the share/embed row and (for 4+ stars) the SolanaView box. */
+/** The one-line monospace footer from real coverage data: "31 rpc calls · 6.4s · checked 14 Oct 18:00 UTC". */
+export function coverageLine(s: Sticker): string {
+  const cv = s.coverage;
+  const bits = [plural(cv.rpcRequests, "rpc call"), seconds(cv.elapsedMs), `checked ${dayTime(s.computedAt)}`];
+  return esc(bits.join(" · "));
+}
+
+/** The sticker plus share/embed links and, only at 4+ overall stars, the quiet SolanaView line. */
 export function renderStickerBody(ctx: PageContext, s: Sticker): string {
   const w = new Wallets(s);
-  const notes = new Notes(s.findings);
   const url = abs(ctx, paths.coin(s.mint));
   const badgeUrl = abs(ctx, paths.badge(s.mint));
   const text = shareText(s);
-  const embed = `<a href="${esc(url)}"><img src="${esc(badgeUrl)}" alt="MSRP window sticker" height="22"></a>`;
+  const embed = `<a href="${esc(url)}"><img src="${esc(badgeUrl)}" alt="MSRP window sticker" height="20"></a>`;
 
-  const label =
-    `<article class="label" id="sticker" data-mint="${esc(s.mint)}">` +
-    headSection(ctx, s, notes) +
-    bigSection(s) +
-    ratingsSection(s) +
-    buildSection(ctx, s, w, notes) +
-    holdersSection(s, w, notes) +
-    marketSection(s, notes) +
+  const sticker =
+    `<article id="sticker" data-mint="${esc(s.mint)}">` +
+    coinHeader(s) +
+    hero(s) +
+    rates(s) +
+    madeSection(ctx, s, w) +
+    holdersSection(s, w) +
+    marketSection(s) +
     notesSection(s, w) +
-    gapsSection(s) +
-    `<section class="sec fine dis"><p>${esc(s.disclaimer)}</p><p>Payment never changes a sticker. <a href="${paths.methodology}">How MSRP decides</a>.</p></section>` +
     `</article>`;
 
-  const links =
-    `<p class="links">` +
-    `<button type="button" class="copy" hidden data-copy="${esc(url)}">copy link</button>` +
-    ext(external.shareX(text, url), "share on X") +
+  const acts =
+    `<nav class="acts" aria-label="Share and export">` +
+    `<button type="button" class="cp" data-copy="${esc(url)}" hidden>Copy link</button>` +
+    ext(external.shareX(text, url), "Post on X") +
     ext(external.shareTelegram(text, url), "Telegram") +
-    `<a href="${esc(paths.api(s.mint))}">JSON API</a>` +
-    `</p>` +
-    `<details class="embed" id="embed"><summary>Embed this sticker</summary>` +
-    `<p>Put this badge on your site. It always shows the latest sticker.</p>` +
-    `<p><img src="${esc(paths.badge(s.mint))}" alt="MSRP badge preview" height="22"></p>` +
+    `<a href="#embed">Embed</a>` +
+    `<a href="${esc(paths.api(s.mint))}">JSON</a>` +
+    ext(external.solscanToken(s.mint), "Solscan ↗") +
+    `</nav>`;
+
+  const embedBlock =
+    `<section class="embed" id="embed"><h2>Embed</h2>` +
+    `<p class="fine">Put this badge on your site. It always shows the latest sticker.</p>` +
+    `<p><img src="${esc(paths.badge(s.mint))}" alt="MSRP badge preview" height="20"></p>` +
     `<textarea id="embed-code" readonly rows="3" aria-label="Badge HTML">${esc(embed)}</textarea>` +
-    `<button type="button" class="copy" hidden data-copy-from="embed-code">copy code</button>` +
-    `</details>`;
+    `<button type="button" class="cp" data-copy-from="embed-code" hidden>Copy code</button>` +
+    `</section>`;
 
   const promo =
     s.ratings.overall.stars !== null && s.ratings.overall.stars >= 4
-      ? `<aside class="promo"><h2>Get your coin seen: SolanaView listings</h2>` +
-        `<p><b>Sponsored listings are separate from MSRP ratings — payment never changes a sticker.</b> ` +
-        `SolanaView is run by the same team as MSRP. This box only appears on stickers with 4 or more stars overall.</p>` +
-        `<p>${ext(external.solanaviewPromote(ctx, s.mint), "See SolanaView listing options")}</p></aside>`
+      ? `<aside class="promo" aria-label="Sponsored, separate from ratings"><small>Separate from ratings</small>` +
+        `<p>Sponsored listings are separate from MSRP ratings — payment never changes a sticker. ` +
+        `Coins with 4 or more stars can buy one on SolanaView, run by the same team. ` +
+        `${ext(external.solanaviewPromote(ctx, s.mint), "SolanaView listings ↗")}</p></aside>`
       : "";
 
-  return label + links + promo;
+  const disclaimer = `<p class="dis">${esc(s.disclaimer)} Payment never changes a sticker.</p>`;
+  return sticker + acts + promo + embedBlock + disclaimer;
 }

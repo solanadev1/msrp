@@ -199,3 +199,38 @@ export const RULES: MethodologyRule[] = [
   { id: "market.liquidity", engine: "market", title: "Liquidity", rule: "Liquidity vs market cap.", why: "Exit depth.", limits: "Can change fast." },
   { id: "overall.min", engine: "overall", title: "Overall", rule: "Lowest section.", why: "Weakest link.", limits: "Not a prediction." },
 ];
+
+/**
+ * Untraced wallets hold more than half of the supply we checked: the engines then give no
+ * insider/independent share and no sticker price, but the market cap is still known.
+ */
+export function untracedSticker(): Sticker {
+  const s = uiSticker();
+  s.headline = { marketCapUsd: 1_840_000, independentPct: null, stickerPriceUsd: null, insiderPct: null };
+  s.crowd.topHolders = [
+    { owner: pad("Poo1Vau1t"), pctSupply: 20, kind: "pool", clusterId: null, funder: null, label: "infrastructure" },
+    { owner: pad("Untraced1"), pctSupply: 30, kind: "wallet", clusterId: null, funder: null, label: "unknown" },
+    { owner: pad("Untraced2"), pctSupply: 25, kind: "wallet", clusterId: null, funder: null, label: "unknown" },
+    { owner: pad("Indep1"), pctSupply: 10, kind: "wallet", clusterId: null, funder: null, label: "independent" },
+  ];
+  s.crowd.clusters = [];
+  return s;
+}
+
+/** Holders known, but no market on DEX Screener: no sticker price, independent share still shown. */
+export function noMarketSticker(): Sticker {
+  const s = uiSticker();
+  s.headline = { ...s.headline, marketCapUsd: null, stickerPriceUsd: null };
+  s.market = null;
+  return s;
+}
+
+/** The creator is known but its funder is not (first SOL beyond what we read). */
+export function noFunderSticker(): Sticker {
+  const s = uiSticker();
+  s.build.funder = null;
+  s.build.family = s.build.family.filter((m) => m.role !== "funder" && m.role !== "sibling");
+  s.build.deployerFundedBeforeLaunchMin = null;
+  s.build.familyFastDevSellCount = 5;
+  return s;
+}

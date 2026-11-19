@@ -1,50 +1,61 @@
 /**
  * Every MSRP page. Pure functions: data in, a full HTML document out. No network, no clock.
- * Look and copy follow docs/DESIGN.md: a printed form, short blunt sentences, numbers first.
+ * Look follows docs/DESIGN.md ("ultra minimal"): one quiet column, a big title, then plain
+ * sections separated by hairlines. Copy: short plain sentences, numbers first, no advice.
  */
 import type { MethodologyRule, PageContext, RecentSticker, Sticker } from "../types";
 import { CACHE, LIMITS, RATE_LIMITS, THRESHOLDS } from "../config";
-import { esc } from "./escape";
-import { dateTime, iso, pct, starLabel, starText } from "./format";
+import { cleanLabel, esc } from "./escape";
+import { dayTime, iso, pct, starText } from "./format";
 import { addressForm, ext, page } from "./layout";
 import { external, paths } from "./paths";
-import { coinTitle, isExample, renderStickerBody } from "./sticker";
+import { coinTitle, coverageLine, dots, isExample, renderStickerBody } from "./sticker";
 
 // ---------------------------------------------------------------------------
 // Home
 // ---------------------------------------------------------------------------
 
-export function renderHome(ctx: PageContext, recent: RecentSticker[]): string {
-  const rows = recent.slice(0, 15).map(
-    (r) =>
-      `<tr><td><a href="${esc(paths.coin(r.mint))}">${esc(coinTitle(r.name, r.symbol))}</a></td>` +
-      `<td class="sc">${r.overallStars === null ? `<span class="st nr">Not rated</span>` : `<span class="st" role="img" aria-label="${starLabel(r.overallStars)}">${starText(r.overallStars)}</span>`}</td>` +
-      `<td class="n">${r.independentPct === null ? `<span class="mob">Independent share: </span>Unknown` : `${esc(pct(r.independentPct))}<span class="mob"> independent</span>`}</td>` +
-      `<td class="n"><time datetime="${iso(r.computedAt)}">${esc(dateTime(r.computedAt).replace(/ \d{4} /, " ").replace(" UTC", ""))}</time></td></tr>`,
+function recentRow(r: RecentSticker): string {
+  const name = cleanLabel(r.name, 40);
+  const sym = cleanLabel(r.symbol, 12);
+  const label = name ?? (sym ? `$${sym}` : "Unnamed coin");
+  const ind = r.independentPct;
+  return (
+    `<a class="rec" href="${esc(paths.coin(r.mint))}">` +
+    `<span class="nm">${esc(label)}${name && sym ? ` <span class="m faint">$${esc(sym)}</span>` : ""}</span>` +
+    `<span class="r">${dots(r.overallStars)}</span>` +
+    `<span class="r${ind !== null && ind < 20 ? " red" : ind === null ? " faint" : ""}" title="Independent share of circulating supply">` +
+    `${ind === null ? "—" : esc(pct(ind))}<span class="vh"> independent</span></span>` +
+    `<span class="r faint hide"><time datetime="${iso(r.computedAt)}" data-ago>${esc(dayTime(r.computedAt).replace(" UTC", ""))}</time></span>` +
+    `</a>`
   );
-  const recentBlock = rows.length
-    ? `<h2>Recently checked</h2><table class="recent"><thead><tr><th scope="col">Coin</th><th scope="col">Overall</th>` +
-      `<th scope="col" class="n">Independent</th><th scope="col" class="n">Checked (UTC)</th></tr></thead><tbody>${rows.join("")}</tbody></table>`
-    : `<h2>Recently checked</h2><p>Nothing yet. Paste an address above, or open the <a href="${paths.example}">example sticker</a>.</p>`;
+}
+
+export function renderHome(ctx: PageContext, recent: RecentSticker[]): string {
+  const rows = recent.slice(0, 15).map(recentRow);
+  const recentBlock =
+    `<section class="recent"><h2>Recently checked</h2>` +
+    (rows.length
+      ? rows.join("")
+      : `<p class="fine">Nothing checked yet. Paste an address above, or open the <a class="lnk" href="${paths.example}">example sticker</a>.</p>`) +
+    `</section>`;
+
+  const what: [string, string][] = [
+    ["Who made it", "The creator wallet, the wallet that paid it, the other wallets that funder paid, and every coin they launched."],
+    ["Who holds it", `The top ${LIMITS.TOP_HOLDERS} holders, split into pools, linked wallets and independent wallets.`],
+    ["Sticker price", "Market cap × the share held by independent wallets: the part of the price that isn't the creator's own circle."],
+  ];
 
   const body =
-    `<h1 class="vh">MSRP: window stickers for Solana meme coins</h1>` +
+    `<section class="homehero"><h1>Who made it.<br><span>Who holds it.</span></h1>` +
+    `<p>Paste any Solana coin. We trace the creator's money, its other wallets and everything they've launched, then show how much of the coin strangers really own.</p>` +
     addressForm("", true) +
-    `<p class="lede">MSRP prints a window sticker for any Solana meme coin, like the one on a new car. ` +
-    `It shows <b>who made the coin</b> (the creator wallet, the wallet that funded it, and every other coin that family launched), ` +
-    `<b>who really holds it</b> (insiders, pools and independent wallets) and the <b>sticker price</b>: the part of the market cap held by independent wallets. ` +
-    `Read-only. No wallet connection, no sign-up.</p>` +
-    `<p class="links"><a href="${paths.example}">See an example sticker</a><a href="${paths.methodology}">How it works</a><a href="${paths.pricing}">Pricing</a><a href="${paths.about}">About</a></p>` +
-    `<div class="cols"><div>` +
+    `<p class="try">Read-only, free, no wallet. <a class="lnk" href="${paths.example}">See an example</a></p>` +
+    `</section>` +
     recentBlock +
-    `</div><div>` +
-    `<h2>What's on a sticker</h2>` +
-    `<dl class="what">` +
-    `<dt>Who made it</dt><dd>The creator wallet, where its SOL came from, the other wallets that same funder paid, how many coins they launched and how fast they sold.</dd>` +
-    `<dt>Who holds it</dt><dd>The top ${LIMITS.TOP_HOLDERS} holders, split into pools, insiders (the creator, linked wallets, launch-block buyers) and independent wallets.</dd>` +
-    `<dt>Sticker price</dt><dd>Market cap × the share of supply held by independent wallets. The part of the price that isn't the creator's own money.</dd>` +
-    `</dl></div></div>` +
-    factoryStory();
+    `<section class="what"><h2>On every sticker</h2>` +
+    what.map(([k, v]) => `<div class="kv"><span class="k">${esc(k)}</span><span>${esc(v)}</span></div>`).join("") +
+    `</section>`;
 
   return page(ctx, {
     title: "MSRP: the window sticker for Solana meme coins",
@@ -56,38 +67,6 @@ export function renderHome(ctx: PageContext, recent: RecentSticker[]): string {
   });
 }
 
-/** Educational: how an automated launch operation works, and what the sticker looks for at each step. */
-function factoryStory(): string {
-  const steps: [string, string][] = [
-    [
-      "A master wallet sends SOL to a brand-new wallet minutes before launch.",
-      `"Funded by" and "First SOL arrived". We flag a creator funded ${THRESHOLDS.FRESH_DEPLOYER_MIN} minutes or less before launch.`,
-    ],
-    [
-      "The new wallet creates the coin and buys its own supply in the same transaction, sometimes with other wallets buying in the same block.",
-      `"Creator's buy at launch" and the launch-block buyers in "Who holds it".`,
-    ],
-    [
-      "After a few launches the operator switches to another fresh wallet paid by the same master wallet.",
-      `The family tree: every wallet the funder paid, and how many coins each launched.`,
-    ],
-    [
-      `If nobody else buys, the bag is sold about ${THRESHOLDS.FAST_DEV_SELL_MIN} minutes later.`,
-      `"Creator sold within ${THRESHOLDS.FAST_DEV_SELL_MIN} min of launch", counted across the whole family.`,
-    ],
-    ["The SOL is swept back to the master wallet, ready for the next launch.", `"SOL sent back to the funder".`],
-  ];
-  return (
-    `<h2>How a launch factory works, and what the sticker checks</h2>` +
-    `<ol class="story">` +
-    steps
-      .map(([a, b]) => `<li>${esc(a)}<br><small>On the sticker: ${esc(b)}</small></li>`)
-      .join("") +
-    `</ol>` +
-    `<p class="fine">Plenty of honest people also use new wallets or sell early. One sign alone proves nothing; the sticker shows all of them side by side so you can judge.</p>`
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Sticker
 // ---------------------------------------------------------------------------
@@ -97,7 +76,7 @@ export function renderSticker(ctx: PageContext, sticker: Sticker): string {
   const h = sticker.headline;
   const bits = [`${starText(sticker.ratings.overall.stars)} overall.`];
   if (h.independentPct !== null) bits.push(`${pct(h.independentPct)} of circulating supply held by independent wallets.`);
-  if (h.insiderPct !== null) bits.push(`Insiders hold ${pct(h.insiderPct)}.`);
+  if (h.insiderPct !== null) bits.push(`Linked wallets hold ${pct(h.insiderPct)}.`);
   bits.push("Who made it and who holds it, from public Solana data.");
   const example = isExample(sticker);
   return page(ctx, {
@@ -106,13 +85,13 @@ export function renderSticker(ctx: PageContext, sticker: Sticker): string {
     path: example ? paths.example : paths.coin(sticker.mint),
     ogImage: paths.og(sticker.mint),
     body: renderStickerBody(ctx, sticker),
-    query: example ? "" : sticker.mint,
     noindex: example,
+    foot: coverageLine(sticker),
   });
 }
 
 // ---------------------------------------------------------------------------
-// Waiting page ("printing")
+// Waiting page
 // ---------------------------------------------------------------------------
 
 /** Steps shown while a sticker is computed. They tick off when the sticker is ready. */
@@ -130,24 +109,23 @@ export const PRINT_STEPS = [
 
 export function renderPrinting(ctx: PageContext, mint: string): string {
   const body =
-    `<section class="label wait" id="wait" data-api="${esc(paths.api(mint))}" data-next="${esc(paths.coin(mint))}">` +
-    `<div class="sec"><h2>Printing a new sticker</h2>` +
-    `<h1 class="m mint">${esc(mint)}</h1>` +
-    `<p>Nobody has checked this coin in the last ${Math.round(CACHE.STICKER_TTL_SEC / 60)} minutes, so we're reading the blockchain now. ` +
-    `It usually takes 5 to ${Math.round(LIMITS.DEADLINE_MS / 1000)} seconds. The sticker appears here when it's done.</p></div>` +
-    `<div class="sec"><ol class="steps m">` +
-    PRINT_STEPS.map((s) => `<li>${esc(s)}…<span class="ok"></span></li>`).join("") +
+    `<section class="wait" id="wait" data-api="${esc(paths.api(mint))}" data-next="${esc(paths.coin(mint))}">` +
+    `<header class="coin"><h1>Checking <span>this coin</span></h1>` +
+    `<p class="meta"><span class="m">${esc(mint)}</span></p></header>` +
+    `<p class="say">Nobody has checked this coin in the last ${Math.round(CACHE.STICKER_TTL_SEC / 60)} minutes, so we're reading the blockchain now. ` +
+    `It usually takes 5 to ${Math.round(LIMITS.DEADLINE_MS / 1000)} seconds, and the sticker opens here by itself.</p>` +
+    `<ol class="steps">` +
+    PRINT_STEPS.map((s) => `<li><span>${esc(s.charAt(0).toLowerCase() + s.slice(1))}</span><i aria-hidden="true"></i><b class="ok">…</b></li>`).join("") +
     `</ol>` +
-    `<p class="status m" id="wait-status" aria-live="polite">Working.</p>` +
-    `<p class="red" id="wait-error" role="alert" hidden></p>` +
-    `<noscript><p>JavaScript is off, so this page reloads by itself every 10 seconds. You can also <a href="${esc(paths.coin(mint))}">reload now</a>.</p></noscript>` +
-    `</div></section>`;
+    `<p class="status" id="wait-status" aria-live="polite">working</p>` +
+    `<p class="err" id="wait-error" role="alert" hidden></p>` +
+    `<noscript><p class="fine">JavaScript is off, so this page reloads by itself every 10 seconds. You can also <a class="lnk" href="${esc(paths.coin(mint))}">reload now</a>.</p></noscript>` +
+    `</section>`;
   return page(ctx, {
-    title: "Printing a sticker",
+    title: "Checking a coin",
     description: "Reading the blockchain to print this coin's window sticker.",
     path: paths.coin(mint),
     body,
-    query: mint,
     noindex: true,
     head: `<noscript><meta http-equiv="refresh" content="10"></noscript>\n`,
   });
@@ -164,23 +142,25 @@ const ENGINE_TITLES: Record<MethodologyRule["engine"], string> = {
   overall: "Overall",
 };
 
+/** Plain list rows with a small grey dot, separated by hairlines. Items must be escaped HTML. */
+function plainList(items: string[]): string {
+  return `<ul class="notes plain">${items.map((t) => `<li class="i"><i></i><div><p>${t}</p></div></li>`).join("")}</ul>`;
+}
+
 export function renderMethodology(ctx: PageContext, rules: MethodologyRule[]): string {
   const order: MethodologyRule["engine"][] = ["build", "crowd", "market", "overall"];
-  const toc = order
-    .filter((e) => rules.some((r) => r.engine === e))
-    .map((e) => `<a href="#${e}">${esc(ENGINE_TITLES[e])}</a>`)
-    .join("");
-  const sections = order
+  const present = order.filter((e) => rules.some((r) => r.engine === e));
+  const toc = present.map((e) => `<a href="#${e}">${esc(ENGINE_TITLES[e])}</a>`).join("");
+  const sections = present
     .map((engine) => {
       const list = rules.filter((r) => r.engine === engine);
-      if (!list.length) return "";
       return (
-        `<section class="sec" id="${engine}"><h2>${esc(ENGINE_TITLES[engine])}</h2>` +
+        `<section id="${engine}"><h2>${esc(ENGINE_TITLES[engine])}</h2>` +
         list
           .map(
             (r) =>
               `<div class="rule" id="${esc(r.id)}"><h3>${esc(r.title)} <a class="pl" href="#${esc(r.id)}" aria-label="Link to this rule">#</a></h3>` +
-              `<dl><dt>Rule</dt><dd>${esc(r.rule)}</dd><dt>Why it matters</dt><dd>${esc(r.why)}</dd><dt>What it can't tell you</dt><dd>${esc(r.limits)}</dd></dl></div>`,
+              `<dl><dt>Rule</dt><dd>${esc(r.rule)}</dd><dt>Why</dt><dd>${esc(r.why)}</dd><dt>Limits</dt><dd>${esc(r.limits)}</dd></dl></div>`,
           )
           .join("") +
         `</section>`
@@ -189,27 +169,32 @@ export function renderMethodology(ctx: PageContext, rules: MethodologyRule[]): s
     .join("");
 
   const body =
-    `<h1>How MSRP reads a coin</h1>` +
-    `<p class="lede">Every rule MSRP applies, with the exact numbers. This page is generated from the same code that prints the stickers, so it can't drift out of date.</p>` +
-    `<div class="label">` +
-    `<section class="sec"><h2>Ground rules</h2><ul>` +
-    `<li>Read-only. MSRP reads public Solana data and DEX Screener. It never asks for a wallet, a key or a signature.</li>` +
-    `<li>Unknown is not zero. Anything we couldn't check is printed as Unknown, with the reason.</li>` +
-    `<li>Stars measure how open the ownership is. They are not a price prediction and not advice.</li>` +
-    `<li>Wallet links are patterns, not proof of who controls a wallet.</li>` +
-    `<li>Payment never changes a sticker. SolanaView listings are separate and never affect a rating.</li>` +
-    `<li>Each sticker uses at most ${LIMITS.MAX_RPC_REQUESTS} Solana requests and stops after ${LIMITS.DEADLINE_MS / 1000} seconds, then shows what it found. Stickers are reused for ${CACHE.STICKER_TTL_SEC / 60} minutes.</li>` +
-    `</ul></section>` +
-    `<section class="sec"><h2>Sticker price</h2><p><b>Sticker price = market cap × share of total supply held by independent wallets.</b> ` +
-    `Independent wallets are top holders we traced and found no link to the creator, to each other or to the launch block. ` +
-    `Pools, the bonding curve, burned coins, wallets we couldn't trace and wallets outside the top ${LIMITS.TOP_HOLDERS} are not counted as independent.</p></section>` +
-    `<section class="sec"><h2>Sections</h2><p class="links">${toc}</p></section>` +
-    sections +
-    `</div>`;
+    `<header class="pg"><h1>How MSRP reads a coin</h1>` +
+    `<p>Every rule MSRP applies, with the exact numbers. This page is generated from the same code that prints the stickers, so it can't drift out of date.</p>` +
+    `<nav class="toc" aria-label="Sections">${toc}</nav></header>` +
+    `<section><h2>Ground rules</h2>` +
+    plainList([
+      "Read-only. MSRP reads public Solana data and DEX Screener. It never asks for a wallet, a key or a signature.",
+      "Unknown is not zero. Anything we couldn't check is printed as Unknown, with the reason.",
+      "Ratings measure how open the ownership is. They are not a price prediction and not advice.",
+      "Wallet links are patterns, not proof of who controls a wallet.",
+      "Payment never changes a sticker. SolanaView listings are separate and never affect a rating.",
+      esc(
+        `Each sticker uses at most ${LIMITS.MAX_RPC_REQUESTS} Solana requests and stops after ${LIMITS.DEADLINE_MS / 1000} seconds, then shows what it found. Stickers are reused for ${CACHE.STICKER_TTL_SEC / 60} minutes.`,
+      ),
+    ]) +
+    `</section>` +
+    `<section id="price"><h2>Sticker price</h2>` +
+    `<p class="lead">Sticker price = market cap × the share of total supply held by independent wallets.</p>` +
+    `<p class="fine">Independent wallets are top holders we traced and found no link to the creator, to each other or to the launch block. ` +
+    `Pools, the bonding curve, burned coins, wallets we couldn't trace and wallets outside the top ${LIMITS.TOP_HOLDERS} are not counted as independent. ` +
+    `The independent and linked percentages on a sticker are shares of the supply outside the curve, pools and burn.</p></section>` +
+    sections;
 
   return page(ctx, {
     title: "How MSRP works",
-    description: "Every rule behind an MSRP window sticker, with exact thresholds and limits: deployer funding, wallet families, linked holders, launch-block buyers and market data.",
+    description:
+      "Every rule behind an MSRP window sticker, with exact thresholds and limits: deployer funding, wallet families, linked holders, launch-block buyers and market data.",
     path: paths.methodology,
     body,
   });
@@ -219,25 +204,45 @@ export function renderMethodology(ctx: PageContext, rules: MethodologyRule[]): s
 // Pricing
 // ---------------------------------------------------------------------------
 
+function plan(name: string, price: string, items: string[], foot: string): string {
+  return (
+    `<section class="plan"><h2><span>${esc(name)}</span><span class="pr">${esc(price)}</span></h2>` +
+    plainList(items) +
+    `<p class="fine">${foot}</p></section>`
+  );
+}
+
 export function renderPricing(ctx: PageContext): string {
   const body =
-    `<h1>Pricing</h1>` +
-    `<p class="lede"><b>Ratings can't be bought.</b> No plan, listing or payment changes what a sticker says.</p>` +
-    `<div class="label plans">` +
-    `<section class="sec"><h2>Free</h2><p class="price">$0</p><ul>` +
-    `<li>Unlimited stickers on this site.</li>` +
-    `<li>The embeddable badge for your site or Telegram.</li>` +
-    `<li>The JSON API, with a fair-use limit of ${RATE_LIMITS.NEW_STICKERS_PER_IP_PER_HOUR} new stickers an hour per visitor. Stickers someone already printed in the last ${CACHE.STICKER_TTL_SEC / 60} minutes don't count.</li>` +
-    `</ul><p><a href="${paths.home}">Check a coin</a></p></section>` +
-    `<section class="sec"><h2>Pro API and alerts</h2><p class="price">Coming soon</p><ul>` +
-    `<li>Higher API limits and bulk checks for bots, terminals and call groups.</li>` +
-    `<li>Family Watch: an alert when a wallet family you follow launches another coin.</li>` +
-    `</ul><p>${ext(external.issues, "Tell us you want it")} (opens a GitHub issue).</p></section>` +
-    `<section class="sec"><h2>Teams</h2><p class="price">Get your coin seen</p><ul>` +
-    `<li>Coins with 4 or more stars overall can buy a listing on SolanaView, a separate site run by the same team.</li>` +
-    `<li>A listing is labeled Sponsored there. It never changes the MSRP sticker.</li>` +
-    `</ul><p>${ext(external.solanaview(ctx), "SolanaView listings")}</p></section>` +
-    `</div>`;
+    `<header class="pg"><h1>Pricing</h1>` +
+    `<p><b>Ratings can't be bought.</b> No plan, listing or payment changes what a sticker says.</p></header>` +
+    plan(
+      "Free",
+      "$0",
+      [
+        "Unlimited stickers on this site.",
+        "The embeddable badge for your site or Telegram.",
+        esc(
+          `The JSON API, with a fair-use limit of ${RATE_LIMITS.NEW_STICKERS_PER_IP_PER_HOUR} new stickers an hour per visitor. Stickers someone already checked in the last ${CACHE.STICKER_TTL_SEC / 60} minutes don't count.`,
+        ),
+      ],
+      `<a class="lnk" href="${paths.home}">Check a coin</a>`,
+    ) +
+    plan(
+      "Pro API and alerts",
+      "Coming soon",
+      ["Higher API limits and bulk checks for bots, terminals and call groups.", "Family Watch: an alert when a wallet family you follow launches another coin."],
+      `${ext(external.issues, "Tell us you want it ↗", 'class="lnk"')} (opens a GitHub issue)`,
+    ) +
+    plan(
+      "Teams",
+      "Get your coin seen",
+      [
+        "Coins with 4 or more stars overall can buy a listing on SolanaView, a separate site run by the same team.",
+        "A listing is labelled Sponsored there. It never changes the MSRP sticker.",
+      ],
+      ext(external.solanaview(ctx), "SolanaView listings ↗", 'class="lnk"'),
+    );
   return page(ctx, {
     title: "Pricing",
     description: "MSRP stickers, badges and the API are free. Pro API and alerts are coming. Ratings can't be bought.",
@@ -250,28 +255,70 @@ export function renderPricing(ctx: PageContext): string {
 // About
 // ---------------------------------------------------------------------------
 
+/** How an automated launch operation works, and what the sticker looks for at each step. */
+function factoryStory(): string {
+  const steps: [string, string][] = [
+    [
+      "A master wallet sends SOL to a brand-new wallet minutes before launch.",
+      `"Creator's first SOL". We flag a creator funded ${THRESHOLDS.FRESH_DEPLOYER_MIN} minutes or less before launch.`,
+    ],
+    [
+      "The new wallet creates the coin and buys its own supply in the same transaction, sometimes with other wallets buying in the same block.",
+      `"Creator's buy at launch" and the launch-block buyers in "Who holds it".`,
+    ],
+    [
+      "After a few launches the operator switches to another fresh wallet paid by the same master wallet.",
+      "The family tree: every wallet the funder paid, and how many coins each launched.",
+    ],
+    [
+      `If nobody else buys, the bag is sold about ${THRESHOLDS.FAST_DEV_SELL_MIN} minutes later.`,
+      `"sold <${THRESHOLDS.FAST_DEV_SELL_MIN}m", counted across the whole family.`,
+    ],
+    ["The SOL is swept back to the master wallet, ready for the next launch.", `"SOL sent back to the funder".`],
+  ];
+  return (
+    `<ol class="notes plain">` +
+    steps.map(([a, b]) => `<li class="i"><i></i><div><p>${esc(a)}</p><small>On the sticker: ${esc(b)}</small></div></li>`).join("") +
+    `</ol>` +
+    `<p class="fine">Plenty of honest people also use new wallets or sell early. One sign alone proves nothing; the sticker shows all of them side by side so you can judge.</p>`
+  );
+}
+
 export function renderAbout(ctx: PageContext): string {
+  const api: [string, string][] = [
+    ["GET /api/v1/sticker/<address>", "The full sticker as JSON. Returns 202 while it's being checked."],
+    ["GET /badge/<address>.svg", "The small badge for your site. Never starts a new check."],
+    ["GET /og/<address>.svg", "The share card: the sticker price on near-black."],
+  ];
   const body =
-    `<h1>About MSRP</h1>` +
-    `<div class="prose">` +
-    `<p>Every new car has a sticker in the window: where it was built, what's in it and what it costs. Nobody trusts the salesman; everybody reads the sticker.</p>` +
-    `<p>MSRP prints that sticker for Solana meme coins. Paste an address and in about ten seconds you see three things:</p>` +
-    `<ol><li><b>Who made it.</b> We trace the creator wallet back to the wallet that paid it, find the other wallets that same funder paid, and count every coin that family launched and how fast it sold.</li>` +
-    `<li><b>Who holds it.</b> We split the top holders into pools, insiders (the creator, wallets linked to it or to each other, launch-block buyers) and independent wallets.</li>` +
-    `<li><b>The sticker price.</b> The market cap times the share held by independent wallets: the part of the price that isn't the creator's own money.</li></ol>` +
-    `<p>The checks come from people who know how launch operations work from the inside: a master wallet funds a fresh wallet just before launch, the coin is created with a buy in the same transaction, wallets rotate every few launches, unsold bags are sold after about ${THRESHOLDS.FAST_DEV_SELL_MIN} minutes and the SOL goes back to the master wallet. Each of those steps leaves a trace on-chain. MSRP reads the traces.</p>` +
-    `<h2>Promises</h2><ul>` +
-    `<li>Read-only. MSRP never asks you to connect a wallet, never asks for a key and never sends a transaction.</li>` +
-    `<li>No accounts and no sign-up.</li>` +
-    `<li>Unknown is printed as Unknown, never as zero.</li>` +
-    `<li>We describe patterns ("funded by the same wallet"), not people. A link between wallets is not proof of who controls them.</li>` +
-    `<li>Ratings can't be bought. SolanaView, a listing site run by the same team, is kept separate and never changes a sticker.</li>` +
-    `<li>Not financial advice and not a price prediction.</li></ul>` +
-    `<p>The code is public: ${ext(external.repo, "github.com/solanadev1/msrp")}. Found a mistake? ${ext(external.issues, "Open an issue")}.</p>` +
-    `</div>`;
+    `<header class="pg"><h1>About MSRP</h1>` +
+    `<p>Every new car has a sticker in the window: where it was built, what's in it and what it costs. Nobody trusts the salesman; everybody reads the sticker. MSRP prints that sticker for Solana meme coins.</p></header>` +
+    `<section><h2>What you see</h2>` +
+    plainList([
+      "<b>Who made it.</b> We trace the creator wallet back to the wallet that paid it, find the other wallets that same funder paid, and count every coin that family launched and how fast it sold.",
+      "<b>Who holds it.</b> We split the top holders into pools, linked wallets (the creator, wallets linked to it or to each other, launch-block buyers) and independent wallets.",
+      "<b>The sticker price.</b> The market cap times the share held by independent wallets: the part of the price that isn't the creator's own circle.",
+    ]) +
+    `</section>` +
+    `<section><h2>How a launch factory works</h2>${factoryStory()}</section>` +
+    `<section><h2>Promises</h2>` +
+    plainList([
+      "Read-only. MSRP never asks you to connect a wallet, never asks for a key and never sends a transaction.",
+      "No accounts and no sign-up.",
+      "Unknown is printed as Unknown, never as zero.",
+      "We describe patterns (&quot;funded by the same wallet&quot;), not people. A link between wallets is not proof of who controls them.",
+      "Ratings can't be bought. SolanaView, a listing site run by the same team, is kept separate and never changes a sticker.",
+      "Not financial advice and not a price prediction.",
+    ]) +
+    `</section>` +
+    `<section id="api"><h2>API</h2><div class="kvs">` +
+    api.map(([k, v]) => `<div class="kv"><span class="m">${esc(k)}</span><span>${esc(v)}</span></div>`).join("") +
+    `</div><p class="fine">Free, with a fair-use limit of ${RATE_LIMITS.NEW_STICKERS_PER_IP_PER_HOUR} new stickers an hour per visitor. Every response carries the disclaimer.</p></section>` +
+    `<section><h2>Source</h2><p class="fine">The code is public: ${ext(external.repo, "github.com/solanadev1/msrp ↗", 'class="lnk"')}. Found a mistake? ${ext(external.issues, "Open an issue ↗", 'class="lnk"')}.</p></section>`;
   return page(ctx, {
     title: "About",
-    description: "MSRP prints a window sticker for Solana meme coins: who made it, who holds it, and the market cap held by independent wallets. Read-only, no accounts.",
+    description:
+      "MSRP prints a window sticker for Solana meme coins: who made it, who holds it, and the market cap held by independent wallets. Read-only, no accounts.",
     path: paths.about,
     body,
   });
@@ -288,9 +335,9 @@ export function renderNotFound(ctx: PageContext): string {
     path: "/404",
     noindex: true,
     body:
-      `<div class="label"><section class="sec"><h2>404</h2><h1>No page here</h1>` +
-      `<p>Check the address, or paste a coin address in the box above. Coin pages look like <span class="m">/coin/&lt;address&gt;</span>.</p>` +
-      `<p><a href="${paths.home}">Home</a> · <a href="${paths.example}">Example sticker</a></p></section></div>`,
+      `<header class="pg"><small class="code">404</small><h1>No page here</h1>` +
+      `<p>Check the address, or paste a coin address in the field above. Coin pages look like <span class="m">/coin/&lt;address&gt;</span>.</p>` +
+      `<p class="try"><a class="lnk" href="${paths.home}">Home</a><a class="lnk" href="${paths.example}">Example sticker</a></p></header>`,
   });
 }
 
@@ -302,7 +349,7 @@ export function renderError(ctx: PageContext, title: string, message: string, st
     path: "/error",
     noindex: true,
     body:
-      `<div class="label"><section class="sec"><h2>Error ${code}</h2><h1>${esc(title)}</h1>` +
-      `<p>${esc(message)}</p><p><a href="${paths.home}">Home</a> · <a href="${paths.example}">Example sticker</a></p></section></div>`,
+      `<header class="pg"><small class="code">Error ${code}</small><h1>${esc(title)}</h1>` +
+      `<p>${esc(message)}</p><p class="try"><a class="lnk" href="${paths.home}">Home</a><a class="lnk" href="${paths.example}">Example sticker</a></p></header>`,
   });
 }
