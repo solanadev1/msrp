@@ -36,6 +36,11 @@ export interface WalletOrigin {
   fundedAt: number | null;
   /** Wallets with very long histories are "veteran"; we don't trace them. */
   veteran: boolean;
+  /**
+   * True when the funding transaction used a durable nonce and paid several wallets at once: how
+   * exchanges send withdrawals. Such a funder is never used to link holders to each other.
+   */
+  fundedInBatch?: boolean;
 }
 
 export type HolderKind =
@@ -44,6 +49,7 @@ export type HolderKind =
   | "creator" // the deployer wallet
   | "burn" // incinerator / burn address
   | "program" // owned by a program (PDA), not a person
+  | "unknown" // a program-derived address run for people (e.g. a multisig vault) or one we could not classify: never infrastructure, never independent
   | "wallet"; // ordinary wallet
 
 export interface HolderFact {
@@ -103,6 +109,8 @@ export interface CoinFacts {
   creationSignature: string | null;
   /** SOL the creator spent buying its own coin inside the creation transaction (dev buy). */
   devBuySol: number | null;
+  /** Whole tokens the creator bought inside the creation transaction (null = not seen). */
+  devBuyTokens?: number | null;
   /** Mint and freeze authorities (null = renounced). "unknown" if not read. */
   mintAuthority: string | null | "unknown";
   freezeAuthority: string | null | "unknown";
@@ -122,6 +130,16 @@ export interface LaunchFact {
   firstDevSellAfterMin: number | null;
   /** Did the deployer sell (any amount) inside our sample? */
   devSold: boolean;
+}
+
+/** A plain transfer of THIS coin out of the deployer: another wallet's balance went up, no SOL came back. */
+export interface TokenTransferFact {
+  to: string;
+  /** Whole tokens received. */
+  tokenAmount: number;
+  signature: string;
+  /** Unix ms, null if unknown. */
+  at: number | null;
 }
 
 /** A wallet funded by the same source as the deployer. */
@@ -149,6 +167,14 @@ export interface FactoryFacts {
   /** Signatures of the funder we sampled (to judge how complete the family picture is). */
   funderSignaturesSampled: number;
   funderIsVeteran: boolean;
+  /** Plain transfers of this coin from the deployer to other wallets, in the transactions we read. */
+  deployerTokenTransfers: TokenTransferFact[];
+  /**
+   * True when every step of the trace finished: the creation was found, and every deployer, funder
+   * and related-wallet read we planned came back (no failure, time limit or request limit).
+   * False means missing signs may simply not have been seen.
+   */
+  traceComplete: boolean;
 }
 
 /** What it cost us to gather the facts, and what we could not see. */
@@ -167,6 +193,11 @@ export interface CollectedFacts {
   coin: CoinFacts;
   holders: HolderFact[];
   earlyBuys: EarlyBuyFact[];
+  /**
+   * True when the early-buy check was complete: the coin's first two blocks were read in full and
+   * every transaction in them was checked. False means same-block buyers may be missing.
+   */
+  earlyBuysComplete: boolean;
   factory: FactoryFacts | null;
   coverage: Coverage;
   collectedAt: number;
@@ -200,7 +231,7 @@ export interface Rating {
   reason: string;
 }
 
-export type ClusterReason = "shared-funder" | "same-block-buy" | "similar-funding" | "creator-funded";
+export type ClusterReason = "shared-funder" | "same-block-buy" | "similar-funding" | "creator-funded" | "creator-sent-tokens";
 
 export interface Cluster {
   id: string;
@@ -244,6 +275,11 @@ export interface Sticker {
     marketCapUsd: number | null;
     /** 0-100: share of the circulating (non-infrastructure) supply held by independent wallets. */
     independentPct: number | null;
+    /**
+     * 0-100: share of TOTAL supply held by independent wallets: the basis of the sticker price, the
+     * main view, the badge and the home list. Null under the same evidence rule as independentPct.
+     */
+    independentOfTotalPct: number | null;
     /** The "sticker price": market cap x independent share of total supply. */
     stickerPriceUsd: number | null;
     /** 0-100: share held by insiders (creator + clusters + same-block buyers). */
@@ -267,6 +303,10 @@ export interface Sticker {
     familySize: number; // deployer + siblings
     familyLaunchCount: number;
     familyFastDevSellCount: number; // launches where the dev sold within 30 minutes
+    /** The deployer's history was traced at all (false: launches and sells are unknown, not zero). */
+    traced: boolean;
+    /** Every step of that trace finished (false: a zero count means "none seen in what we could read"). */
+    traceComplete: boolean;
     sentBackToFunderSol: number;
     family: FamilyMember[];
     mintAuthority: CoinFacts["mintAuthority"];
@@ -363,6 +403,7 @@ export interface RecentSticker {
   symbol: string | null;
   imageUrl: string | null;
   overallStars: Stars;
+  /** Share of TOTAL supply held by independent wallets (Sticker.headline.independentOfTotalPct). */
   independentPct: number | null;
   computedAt: number;
 }

@@ -1,9 +1,13 @@
+import { collectFacts } from "./chain/collect";
+import { buildSticker } from "./engines/sticker";
 import type { AnalyzeOptions, Sticker } from "./types";
 
 /**
- * Full pipeline: read facts from the chain (src/chain/collect.ts), then build the sticker
- * (src/engines/sticker.ts). PLACEHOLDER until the integration step wires it up.
+ * Full pipeline for one coin: read the facts from Solana and DEX Screener (src/chain, read-only,
+ * inside the request budget and deadline in `opts`), then turn them into a sticker (src/engines,
+ * pure). Throws only the chain reader's errors (InvalidMintError, NotFoundError,
+ * ChainUnavailableError); src/web turns those into plain-language pages.
  */
-export async function analyze(_mint: string, _opts: AnalyzeOptions): Promise<Sticker> {
-  throw new Error("analyze() is not wired up yet");
+export async function analyze(mint: string, opts: AnalyzeOptions): Promise<Sticker> {
+  return buildSticker(await collectFacts(mint, opts));
 }

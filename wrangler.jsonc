@@ -7,12 +7,14 @@
   "compatibility_date": "2025-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "assets": { "directory": "public", "binding": "ASSETS" },
+  // MSRP_PUBLIC_URL is left out on purpose: links then use the address the site is
+  // visited at. Add it only with the real address (for example a custom domain).
   "vars": {
-    "MSRP_PUBLIC_URL": "https://msrp.workers.dev",
     "SOLANAVIEW_URL": "https://solanaview.dev"
   },
-  // Optional storage. Without a database MSRP still works (it falls back to the
-  // free Cloudflare cache). See docs/MY_ACTIONS.md to create and attach it.
+  // Storage: the D1 database is needed for stickers to be remembered between visits.
+  // On a *.workers.dev address Cloudflare's cache does nothing, so without D1 each
+  // Worker instance only remembers what it printed itself. See docs/MY_ACTIONS.md (step 3).
   // "d1_databases": [{ "binding": "DB", "database_name": "msrp", "database_id": "<fill in>" }],
   "observability": { "enabled": true }
   // No cron triggers: MSRP only works when someone opens a page, so it can't

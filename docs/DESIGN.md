@@ -12,7 +12,7 @@ History: the owner rejected a dark neon "showroom" (too AI), a white printed lab
 ## Coin page anatomy (top to bottom)
 1. Top line: `● msrp` on the left, a small underline-only search `paste address  /` on the right.
 2. `Name $SYMBOL` (26px, 500, symbol dim), then a mono subline `Abcd…pump · pump.fun · 2h` (plus `· example` on the example page).
-3. Hero row: the big number (72px, purple) = sticker price, captioned in mono `independent of $1.84M`. When it's unknown, show `—` in dim grey, captioned `holders unknown`. On the right sits the wallet-family graph (about 170px, hairline edges; funder yellow, coin purple and largest, creator white, linked red, others dark grey; `<title>` tooltips).
+3. Hero row: the big number (72px, purple) = sticker price, captioned in mono `independent of $1.84M`. When it's unknown, show `?` in dim grey, captioned `holders unknown`. On the right sits the wallet-family graph (about 170px, hairline edges; funder yellow, coin purple and largest, creator white, linked red, others dark grey; `<title>` tooltips).
 4. Four hairline rows, each a short grey label and a mono value:
    - `rating`: five 9px dots (purple filled / `#26262b` empty), or `not rated` dim
    - `creator`: `7xKp…Qe2D ← FuNd…9aZt 3m before launch` (creator purple, funder yellow, rest dim)

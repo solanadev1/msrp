@@ -1,0 +1,414 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { LIMITS, PROGRAMS } from "../src/config";
+import { ChainUnavailableError, collectFacts, holderKind, InvalidMintError, NotFoundError, type CollectTuning } from "../src/chain/collect";
+import { buildSticker } from "../src/engines/sticker";
+import { isValidAddress } from "../src/chain/base58";
+import { createRpcClient, RpcError } from "../src/chain/rpc";
+import type { AnalyzeOptions, CollectedFacts, RpcClient } from "../src/types";
+import { fixedNow, loadFixture, ReplayRpc, replayFetch, type Fixture } from "./helpers/replay";
+
+const FIXTURES = ["curve-coin", "graduated-coin", "curve-coin-fee-sharing"] as const;
+
+function options(f: Fixture, rpc: RpcClient, over: Partial<AnalyzeOptions> = {}): AnalyzeOptions {
+  return { rpc, fetch: replayFetch(f), now: fixedNow(f), maxRpcRequests: LIMITS.MAX_RPC_REQUESTS, deadlineMs: LIMITS.DEADLINE_MS, ...over };
+}
+
+async function replay(name: string, over: Partial<AnalyzeOptions> = {}) {
+  const f = loadFixture(name);
+  const rpc = new ReplayRpc(f);
+  const facts = await collectFacts(f.mint, options(f, rpc, over));
+  return { f, rpc, facts };
+}
+
+/** Checks every sticker's facts must pass, whatever the coin. */
+function assertSane(facts: CollectedFacts, f: Fixture) {
+  const c = facts.coin;
+  assert.equal(c.mint, f.mint);
+  assert.ok(c.supply > 0, "supply > 0");
+  assert.equal(c.decimals, 6);
+  assert.equal(c.launchpad, "pump.fun");
+  assert.ok(c.creator && isValidAddress(c.creator), "creator found");
+  assert.ok(c.bondingCurve, "curve read");
+  assert.ok(c.bondingCurve.progressPct !== null && c.bondingCurve.progressPct >= 0 && c.bondingCurve.progressPct <= 100);
+  assert.ok(c.createdAt !== null && c.createdAt < f.capturedAt, "creation time found");
+  assert.ok(c.creationSlot !== null && c.creationSignature !== null);
+  assert.ok(c.devBuySol !== null && c.devBuySol >= 0);
+  assert.notEqual(c.mintAuthority, "unknown");
+  assert.ok(c.market, "DEX Screener market facts");
+
+  assert.ok(facts.holders.length > 0, "holders found");
+  let pct = 0;
+  for (const h of facts.holders) {
+    assert.ok(["bonding-curve", "pool", "creator", "burn", "program", "unknown", "wallet"].includes(h.kind));
+    assert.ok(h.amount > 0 && h.pctSupply > 0 && h.pctSupply <= 100);
+    if (h.kind === "wallet" || h.kind === "creator") assert.ok(h.origin, `origin traced for ${h.owner}`);
+    else assert.equal(h.origin, null);
+    if (h.origin) {
+      assert.equal(h.origin.wallet, h.owner);
+      assert.ok(h.origin.signaturesSampled > 0 && h.origin.signaturesSampled <= LIMITS.ORIGIN_SIGNATURES);
+      if (!h.origin.historyComplete) assert.equal(h.origin.funder, null, "never guess a funder without the full history");
+    }
+    pct += h.pctSupply;
+  }
+  assert.ok(pct <= 100.0001);
+  const amounts = facts.holders.map((h) => h.amount);
+  assert.deepEqual(amounts, [...amounts].sort((a, b) => b - a), "largest first");
+
+  for (const e of facts.earlyBuys) {
+    assert.ok(e.slotsAfterCreate >= 0 && e.slotsAfterCreate <= 1);
+    assert.ok(e.tokenAmount > 0);
+    assert.notEqual(e.wallet, c.creator);
+  }
+  assert.ok(facts.factory, "factory facts");
+  assert.equal(facts.factory.deployer, c.creator);
+  assert.ok(facts.factory.deployerLaunches.some((l) => l.mint === f.mint), "current coin listed as a launch");
+  assert.ok(facts.factory.siblings.length <= LIMITS.MAX_SIBLINGS);
+
+  const cov = facts.coverage;
+  assert.ok(cov.rpcRequests > 0 && cov.rpcRequests <= LIMITS.MAX_RPC_REQUESTS, `requests ${cov.rpcRequests} within budget`);
+  assert.equal(cov.dexRequests, 1);
+  assert.ok(cov.notes.length > 0, "capped steps are explained");
+  assert.equal(cov.complete, false);
+  for (const n of cov.notes) assert.doesNotMatch(n, /scam|rug|safe|moon|buy now/i);
+  assert.equal(facts.collectedAt, f.capturedAt);
+}
+
+for (const name of FIXTURES) {
+  test(`collectFacts on real ${name} (replayed offline)`, async () => {
+    const { f, rpc, facts } = await replay(name);
+    assert.deepEqual(rpc.misses, [], "every call was recorded");
+    assertSane(facts, f);
+    assert.equal(facts.coverage.rpcRequests, rpc.requests);
+  });
+}
+
+test("curve coin: still on the curve, curve account is the biggest holder", async () => {
+  const { facts } = await replay("curve-coin");
+  assert.equal(facts.coin.bondingCurve?.complete, false);
+  assert.ok(facts.holders.some((h) => h.kind === "bonding-curve"));
+  assert.ok(facts.coin.bondingCurve && facts.coin.bondingCurve.progressPct !== null && facts.coin.bondingCurve.progressPct < 100);
+});
+
+test("graduated coin: curve complete, pool holds tokens, launch-factory pattern visible", async () => {
+  const { facts } = await replay("graduated-coin");
+  assert.equal(facts.coin.bondingCurve?.complete, true);
+  assert.equal(facts.coin.bondingCurve?.progressPct, 100);
+  assert.ok(facts.holders.some((h) => h.kind === "pool"));
+  const fac = facts.factory;
+  assert.ok(fac);
+  // Fresh deployer funded through a temporary wrapped-SOL account by a busy master wallet,
+  // sold on PumpSwap after graduation, and swept the SOL back to that master.
+  assert.equal(fac.deployer, "BvbAXpW8GQoxCUAooG3H816MRSh4UBvvFP7cjKFqvzsm");
+  assert.equal(fac.funder, "AZyfCKACS3nxzeBYLfXF2PKk6FbztboAqXWgCfKmeVvb");
+  assert.equal(fac.deployerOrigin?.historyComplete, true);
+  assert.ok((fac.deployerOrigin?.fundedSol ?? 0) > 0.4);
+  assert.ok(fac.deployerSentBackSol > 13, `sent back ${fac.deployerSentBackSol}`);
+  const launch = fac.deployerLaunches.find((l) => l.mint === facts.coin.mint);
+  assert.equal(launch?.devSold, true);
+  assert.ok(launch?.firstDevSellAfterMin !== null && (launch?.firstDevSellAfterMin ?? 99) < 60);
+  assert.ok(fac.funderSignaturesSampled > 0);
+  // Funded 2 seconds before launch, sold 0.3 minutes after it.
+  assert.equal((facts.coin.createdAt ?? 0) - (fac.deployerOrigin?.fundedAt ?? 0), 2000);
+  assert.equal(launch?.firstDevSellAfterMin, 0.3);
+  // The coin graduated in its own creation block: two bundle transactions bought for 17 wallets.
+  // The curve's short history reaches that block even though the coin has thousands of trades.
+  assert.equal(facts.earlyBuys.length, 17);
+  assert.ok(facts.earlyBuys.every((e) => e.slotsAfterCreate === 0));
+  assert.equal(new Set(facts.earlyBuys.map((e) => e.signature)).size, 2);
+  assert.ok(!facts.coverage.notes.some((n) => n.includes("checked only among the top holders")), "first block read in full");
+  // The master funded other wallets around the same time; 9 of them are among those bundle buyers,
+  // and every one of the 12 checked sent SOL back to the master.
+  assert.equal(fac.siblings.length, 12);
+  const siblings = new Set(fac.siblings.map((x) => x.wallet));
+  assert.equal(facts.earlyBuys.filter((e) => siblings.has(e.wallet)).length, 9);
+  assert.ok(fac.siblings.every((x) => x.sentBackSol > 0));
+  // The pool holds almost everything: insiders sold out.
+  const pool = facts.holders.filter((h) => h.kind === "pool").reduce((t, h) => t + h.pctSupply, 0);
+  assert.ok(pool > 99, `pool ${pool}%`);
+});
+
+test("curve coin: its first block was read in full and nobody but the deployer bought in it", async () => {
+  const { facts } = await replay("curve-coin");
+  assert.deepEqual(facts.earlyBuys, []);
+  assert.ok(!facts.coverage.notes.some((n) => n.includes("checked only among the top holders")));
+  assert.equal(facts.coin.devBuySol, 4.876049381);
+});
+
+test("fee-sharing coin: same-block bundle buyers found by reading back from a nearby transaction", async () => {
+  const { facts } = await replay("curve-coin-fee-sharing");
+  const wallets = facts.earlyBuys.map((e) => e.wallet);
+  // The bundle transaction in tx-samples.json bought for these two wallets in the creation block.
+  for (const w of ["Am8qinvoJHR6AZ3mEiLYwe1mRPh24qidohQtxBN25EAM", "FFhMpqcphMyWUuCbtfLC41Fczv83b1xLgdp6mtMsgKNa"]) assert.ok(wallets.includes(w), w);
+  assert.equal(facts.earlyBuys.length, 6);
+  assert.equal(facts.earlyBuys.filter((e) => e.slotsAfterCreate === 1).length, 1);
+});
+
+test("fee-sharing coin: deployer comes from the creation, not pump.fun's creator record", async () => {
+  const { facts } = await replay("curve-coin-fee-sharing");
+  assert.equal(facts.coin.creator, "Et1fXddAXcMPfhqNvXakqhnQt4nwNnMwicuh8zJG6wzv");
+  assert.equal(facts.coin.devBuySol, 3.5);
+  // Holders were read with the fallback because the public RPC refuses the largest-holders lookup.
+  assert.ok(facts.coverage.notes.some((n) => n.includes("refused the largest-holders lookup")));
+  // A veteran deployer is not traced: unknown, never zero.
+  assert.equal(facts.factory?.funder, null);
+  assert.equal(facts.factory?.deployerOrigin?.veteran, true);
+  const launch = facts.factory?.deployerLaunches.find((l) => l.mint === facts.coin.mint);
+  assert.equal(launch?.devSold, true);
+});
+
+test("the real RPC client over the replayed HTTP layer gives the same facts within budget", async () => {
+  for (const name of FIXTURES) {
+    const f = loadFixture(name);
+    const http = replayFetch(f);
+    const rpc = createRpcClient({ url: "https://rpc.replay.invalid", fetch: http, maxRequests: LIMITS.MAX_RPC_REQUESTS, timeoutMs: 5000, sleep: async () => {} });
+    const facts = await collectFacts(f.mint, { ...options(f, rpc), fetch: http });
+    assert.deepEqual(http.stats.misses, [], name);
+    assert.ok(rpc.requests <= LIMITS.MAX_RPC_REQUESTS, name);
+    const direct = await replay(name);
+    assert.deepEqual(facts.coin, direct.facts.coin, name);
+    assert.deepEqual(facts.factory, direct.facts.factory, name);
+    assert.deepEqual(facts.holders, direct.facts.holders, name);
+    assert.deepEqual(facts.earlyBuys, direct.facts.earlyBuys, name);
+    assert.equal(facts.earlyBuysComplete, direct.facts.earlyBuysComplete, name);
+  }
+});
+
+for (const budget of [1, 2, 3, 5, 8]) {
+  test(`budget of ${budget} request(s): partial facts, never more requests, never a throw`, async () => {
+    for (const name of FIXTURES) {
+      const needed = (await replay(name)).rpc.requests;
+      const { facts, rpc } = await replay(name, { maxRpcRequests: budget });
+      assert.ok(rpc.requests <= budget, `${name}: ${rpc.requests} > ${budget}`);
+      assert.equal(facts.coverage.complete, false);
+      if (budget < needed) assert.ok(facts.coverage.notes.some((n) => n.includes(`${budget} Solana request`)), `${name}: budget note`);
+      else assert.ok(!facts.coverage.notes.some((n) => n.includes("Solana request")), `${name}: needs only ${needed}, so no budget note`);
+      assert.ok(facts.coin.supply > 0, "the coin itself is always read first");
+      assert.deepEqual(rpc.misses, [], `${name}: no unrecorded calls`);
+    }
+  });
+}
+
+test("deadline: a slow chain stops early and says so", async () => {
+  const f = loadFixture("graduated-coin");
+  const rpc = new ReplayRpc(f);
+  let t = f.capturedAt;
+  // Every clock read moves time 3 seconds forward.
+  const facts = await collectFacts(f.mint, options(f, rpc, { now: () => (t += 3000), deadlineMs: 12_000 }));
+  assert.equal(facts.coverage.complete, false);
+  assert.ok(facts.coverage.notes.some((n) => n.includes("seconds")));
+  const full = await replay("graduated-coin");
+  assert.ok(rpc.requests < full.rpc.requests);
+});
+
+test("invalid mint, missing mint and an unreachable chain are typed errors", async () => {
+  const f = loadFixture("curve-coin");
+  const rpc = new ReplayRpc(f);
+  await assert.rejects(collectFacts("not-a-mint", options(f, rpc)), InvalidMintError);
+  assert.equal(rpc.requests, 0);
+
+  const nothing: RpcClient = {
+    requests: 0,
+    async call() {
+      return { context: { slot: 1 }, value: null } as never;
+    },
+    async batch(calls) {
+      return calls.map((c) => (c.method === "getMultipleAccounts" ? { context: { slot: 1 }, value: [null, null] } : [])) as never;
+    },
+  };
+  await assert.rejects(collectFacts("So11111111111111111111111111111111111111113", options(f, nothing)), NotFoundError);
+
+  const wallet: RpcClient = {
+    requests: 0,
+    async call() {
+      return [] as never;
+    },
+    async batch(calls) {
+      return calls.map((c) =>
+        c.method === "getMultipleAccounts" ? { context: { slot: 1 }, value: [{ owner: "11111111111111111111111111111111", data: ["", "base64"], lamports: 1 }, null] } : [],
+      ) as never;
+    },
+  };
+  await assert.rejects(collectFacts("So11111111111111111111111111111111111111113", options(f, wallet)), InvalidMintError);
+
+  const down: RpcClient = {
+    requests: 0,
+    async call() {
+      throw new Error("down");
+    },
+    async batch(calls) {
+      return calls.map(() => new Error("down"));
+    },
+  };
+  await assert.rejects(collectFacts(f.mint, options(f, down)), ChainUnavailableError);
+});
+
+test("round 1 reads the mint and its curve in ONE account call; identical calls are never repeated", async () => {
+  const { f, rpc } = await replay("curve-coin-fee-sharing");
+  const curve = "3Nx96x3fTCuJhQux8J8MdehAdm11YVK4FcXP7Fi8b7ne";
+  assert.ok(rpc.calls.some((k) => k.startsWith(`getMultipleAccounts [["${f.mint}","${curve}"]`)), "mint + curve merged");
+  assert.equal(new Set(rpc.calls).size, rpc.calls.length, "no duplicate calls");
+  // Many calls, few HTTP requests: that is the point of batching.
+  assert.ok(rpc.calls.length > rpc.requests * 3, `${rpc.calls.length} calls in ${rpc.requests} requests`);
+});
+
+// ---------------------------------------------------------------------------
+// Reviewer findings, Nov 19 2026
+// ---------------------------------------------------------------------------
+
+/** Answers like the replay, but refuses (per-call 429) every call `refuse` picks, every time. */
+class Refusing implements RpcClient {
+  constructor(
+    private readonly inner: ReplayRpc,
+    private readonly refuse: (method: string, params: unknown[]) => boolean,
+  ) {}
+  get requests() {
+    return this.inner.requests;
+  }
+  call<T>(method: string, params: unknown[]): Promise<T> {
+    return this.inner.call<T>(method, params);
+  }
+  async batch<T>(calls: { method: string; params: unknown[] }[]): Promise<(T | Error)[]> {
+    const answers = await this.inner.batch<T>(calls);
+    return answers.map((a, i) => {
+      const c = calls[i];
+      return c && this.refuse(c.method, c.params) ? new RpcError(429, "Too many requests for a specific RPC call", c.method) : a;
+    });
+  }
+}
+const QUICK: CollectTuning = { retryDelayMs: 30, timeoutRetryDelayMs: 10 };
+
+test("holder kinds: a system-owned program address (a Squads multisig vault) is unknown, never infrastructure", () => {
+  const ctx = { curve: "ADTABoCurve111111111111111111111111111111111", deployer: "HGR3gUcvzWRK1A9bE4L9BP7Lj76gCUprKgxa4xMYyqa7" };
+  // Live (coin DtgzbnAK...ie4jhNa, Meteora DBC): this Squads vault held 7.92% and was left out as "program".
+  const squadsVault = "3UR1TiwUJpabCRUzQ7eLtTggYAP9VPncuy7XHgAA3Gqi";
+  assert.equal(holderKind(squadsVault, { ...ctx, ownerProgram: PROGRAMS.SYSTEM }), "unknown");
+  assert.equal(holderKind(squadsVault, { ...ctx, ownerProgram: null }), "unknown", "an empty program address too");
+  assert.equal(holderKind(squadsVault, { ...ctx, ownerProgram: undefined }), "unknown", "unread: never assumed to be a program");
+  // Known pool authorities (system-owned too) stay pools: DBC, DAMM v2, LaunchLab, Raydium.
+  for (const a of [
+    "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM",
+    "HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC",
+    "WLHv2UAZm6z4KyaaELi5pjdbJh6RESMva1Rnn8pJVVh",
+    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+  ]) {
+    assert.equal(holderKind(a, { ...ctx, ownerProgram: PROGRAMS.SYSTEM }), "pool", a);
+  }
+  // An address whose account a program owns is infrastructure; a pool program's account is a pool.
+  assert.equal(holderKind(squadsVault, { ...ctx, ownerProgram: "LocKerProgram1111111111111111111111111111111" }), "program");
+  assert.equal(holderKind(squadsVault, { ...ctx, ownerProgram: PROGRAMS.PUMP_AMM }), "pool");
+  // Ordinary wallets, the creator, the curve and burns.
+  const wallet = "7mKkcvD9zbwaUdrVsSCPxQi1QSr8exUzsbnmcEuDzZG5";
+  assert.equal(holderKind(wallet, { ...ctx, ownerProgram: PROGRAMS.SYSTEM }), "wallet");
+  assert.equal(holderKind(wallet, { ...ctx, ownerProgram: null }), "wallet");
+  assert.equal(holderKind(wallet, { ...ctx, ownerProgram: undefined }), "unchecked");
+  assert.equal(holderKind(ctx.deployer, { ...ctx, ownerProgram: PROGRAMS.SYSTEM }), "creator");
+  assert.equal(holderKind(ctx.curve, { ...ctx, ownerProgram: PROGRAMS.PUMP }), "bonding-curve");
+  assert.equal(holderKind(PROGRAMS.INCINERATOR, { ...ctx, ownerProgram: null }), "burn");
+});
+
+test("graduated coin: program addresses run for people or unknown routers are 'unknown', never left out", async () => {
+  const { facts } = await replay("graduated-coin");
+  const unknown = facts.holders.filter((h) => h.kind === "unknown").map((h) => h.owner);
+  // A smart-account vault (VaultTransferSol) and two swap-router addresses, all system-owned.
+  assert.ok(unknown.includes("GBjjkTJzQZhxmoXJUGgZus6i7cUmbzM85DEYZKoNDdx5"));
+  for (const h of facts.holders.filter((x) => x.kind === "unknown")) assert.equal(h.origin, null);
+  const s = buildSticker(facts);
+  for (const v of s.crowd.topHolders.filter((x) => x.kind === "unknown")) assert.notEqual(v.label, "independent");
+  for (const v of s.crowd.topHolders.filter((x) => x.kind === "unknown")) assert.notEqual(v.label, "infrastructure");
+});
+
+test("curve coin: the creator's plain transfer of 40M coins to a top holder links that holder (live)", async () => {
+  const { facts } = await replay("curve-coin");
+  const creator = "HGR3gUcvzWRK1A9bE4L9BP7Lj76gCUprKgxa4xMYyqa7";
+  const receiver = "3fQhiQdonmHw6NP5YnbSyXSQA1FNC8yvm8oYV5mUhHNN";
+  assert.deepEqual(
+    facts.factory?.deployerTokenTransfers.map((t) => [t.to, t.tokenAmount]),
+    [[receiver, 40_000_000]],
+  );
+  assert.ok((facts.coin.devBuyTokens ?? 0) > 150_000_000, "dev bag read from the creation");
+  const s = buildSticker(facts);
+  const v = s.crowd.topHolders.find((x) => x.owner === receiver);
+  assert.equal(v?.label, "insider");
+  const cl = s.crowd.clusters.find((c) => c.wallets.includes(receiver));
+  assert.ok(cl?.reasons.includes("creator-sent-tokens"));
+  assert.ok(cl?.wallets.includes(creator));
+});
+
+test("fixtures: every step finished, so the trace and the first-block check are complete", async () => {
+  for (const name of FIXTURES) {
+    const { facts } = await replay(name);
+    assert.equal(facts.factory?.traceComplete, true, name);
+    assert.equal(facts.earlyBuysComplete, true, name);
+  }
+});
+
+test("unread deployer transactions make the trace partial: no 5 stars, no good-news build findings (YcdDVw6U...pump)", async () => {
+  // The fee-sharing coin's deployer is a long-history wallet: its origin counts as known without
+  // reading any transaction, so only the reads of its launches and sells are missing here.
+  const f = loadFixture("curve-coin-fee-sharing");
+  const clean = await replay("curve-coin-fee-sharing");
+  const deployer = clean.facts.coin.creator;
+  const creation = clean.facts.coin.creationSignature;
+  assert.ok(deployer && creation);
+  assert.equal(clean.facts.factory?.deployerOrigin?.veteran, true);
+  const deployerTxs = new Set(
+    Object.values(f.rpc)
+      .filter((e) => e.method === "getSignaturesForAddress" && e.params[0] === deployer && Array.isArray(e.result))
+      .flatMap((e) => (e.result as { signature: string }[]).map((x) => x.signature)),
+  );
+  deployerTxs.delete(creation);
+  const rpc = new Refusing(new ReplayRpc(f), (m, p) => m === "getTransaction" && deployerTxs.has(String(p[0])));
+  const facts = await collectFacts(f.mint, options(f, rpc), QUICK);
+  assert.ok(facts.factory, "the trace ran");
+  assert.equal(facts.factory.traceComplete, false);
+  assert.ok(facts.coverage.notes.includes("Some of the deployer's transactions could not be read."));
+  const s = buildSticker(facts);
+  assert.equal(s.build.traceComplete, false);
+  assert.notEqual(s.ratings.build.stars, 5, "never top marks from a partial trace");
+  for (const id of ["build.no-factory-signs", "build.no-dev-sell"]) assert.ok(!s.findings.some((x) => x.id === id), id);
+  assert.ok(s.findings.some((x) => x.id === "build.trace-partial"));
+});
+
+test("same-block check: an unread first block is 'not fully checked', never 'none found' (YcdDVw6U...pump)", async () => {
+  const f = loadFixture("curve-coin");
+  // Every transaction in the coin's first two blocks is refused.
+  const clean = await replay("curve-coin");
+  const slot = clean.facts.coin.creationSlot ?? 0;
+  const firstBlocks = new Set(
+    Object.values(f.rpc)
+      .filter((e) => e.method === "getSignaturesForAddress" && Array.isArray(e.result))
+      .flatMap((e) => (e.result as { signature: string; slot: number }[]).filter((x) => x.slot >= slot && x.slot <= slot + 1).map((x) => x.signature)),
+  );
+  firstBlocks.delete(clean.facts.coin.creationSignature ?? "");
+  assert.ok(firstBlocks.size > 0);
+  const rpc = new Refusing(new ReplayRpc(f), (m, p) => m === "getTransaction" && firstBlocks.has(String(p[0])));
+  const facts = await collectFacts(f.mint, options(f, rpc), QUICK);
+  assert.equal(facts.earlyBuysComplete, false);
+  const s = buildSticker(facts);
+  assert.ok(!s.findings.some((x) => x.id === "crowd.no-bundle"), "never 'No same-block buyers found'");
+  const unknown = s.findings.find((x) => x.id === "crowd.bundle-unknown");
+  if (s.crowd.bundlePct === 0) assert.equal(unknown?.title, "Same-block buyers not fully checked");
+  for (const x of s.findings) if (x.id === "crowd.no-links") assert.doesNotMatch(x.detail, /creation block/);
+});
+
+test("first-block notes: holders never read are not described as having 'histories too long'", async () => {
+  const f = loadFixture("graduated-coin");
+  const clean = await replay("graduated-coin");
+  const curve = clean.facts.coin.bondingCurve?.address;
+  const deployer = clean.facts.coin.creator;
+  const holders = new Set(clean.facts.holders.filter((h) => h.kind === "wallet").map((h) => h.owner));
+  // The first block can't be read (curve history and the backwards read are refused), and the
+  // holders' own histories are refused too: they were never read, whatever their length.
+  const rpc = new Refusing(new ReplayRpc(f), (m, p) => {
+    if (m !== "getSignaturesForAddress") return false;
+    const who = String(p[0]);
+    const opts = (p[1] ?? {}) as { until?: string };
+    return who === curve || (who === f.mint && opts.until !== undefined) || (holders.has(who) && who !== deployer);
+  });
+  const facts = await collectFacts(f.mint, options(f, rpc), QUICK);
+  assert.equal(facts.earlyBuysComplete, false);
+  const notes = facts.coverage.notes.join("\n");
+  assert.match(notes, /top holder\(s\) could not be checked for first-block buys \(time or request limit\)/);
+  assert.doesNotMatch(notes, /histories too long/);
+});

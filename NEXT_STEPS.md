@@ -20,3 +20,10 @@ Ordered by impact. Each one is something I can build without you unless it says 
 11. **Holder coverage beyond the top 20**: sample the long tail with a paid RPC that lists all token holders. **(needs you: Helius key)**
 12. **Custom domain** (for example msrp.fyi or getmsrp.com). **(needs you: buy the domain)**
 13. **Weekly accuracy review**: re-check old stickers and see whether the "fast dev sell" pattern matched what actually happened, then publish the results on the methodology page.
+14. **Serial fast sellers**: a deployer whose every launch (3 or more) sold within 30 minutes loses only one build star today, because "launch factory" starts at 5 launches. Proposal: treat "3+ launches, all fast sells" as a second sign. **(needs you: a ratings rule change)**
+15. **Lower CPU per new sticker** so the free Cloudflare plan's 10 ms is enough: read 200 instead of 1,000 signatures per wallet, and skip the long signature lists for wallets we already know are busy. **(needs you only if you pick option B in MY_ACTIONS step 6)**
+16. **Pool share instead of liquidity ratio**: judge a crashed coin by how much of the supply sits back in its pool (we already read it), not only by liquidity above market cap.
+17. **Known router and launchpad addresses**: name more program addresses (swap routers, lockers) so they count as infrastructure instead of "unknown".
+18. **Second-hop transfers**: follow the creator's coins one more step (creator → wallet → wallets) within the request budget.
+19. **Cloudflare Rate Limiting binding** for a shared per-visitor limit across machines, and refusing new computations started by `<img>`/`<script>` tags on other sites (`Sec-Fetch-Dest`).
+20. **One request per window after a pause**: merge retried and new calls of the same kind into one request after the 12-second wait (saves a request or two per sticker on the public service).
