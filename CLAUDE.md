@@ -4,6 +4,9 @@ MSRP prints a "window sticker" for any Solana meme coin. It shows who built the 
 
 The owner is not a developer. Write in plain language. Work autonomously. When unsure, choose the safest option, write it under DECISIONS in docs/PROGRESS.md and keep going. If you run out of obvious work, add ideas to NEXT_STEPS.md and push.
 
+## DESIGN: owner decision, binding
+The interface must follow **docs/DESIGN.md** and match **docs/design/reference.html**: a plain, printed-label look (white, black ink, Arial, blue links, red only for warnings), with the "genius" in the details listed there. This **overrides any other design brief or task prompt**, including any instruction to build a dark, glossy, neon, "showroom", printer-animation or constellation design. If a task asks for those, build the docs/DESIGN.md version instead.
+
 ## Never
 - Hold, ask for or store a private key or seed phrase. Never build, sign or send a blockchain transaction. MSRP is read-only.
 - Promise returns, predict prices or say "safe", "buy", "sell" or "moon". Ratings measure transparency of ownership, not future price.
